@@ -116,7 +116,7 @@ _JOB_KILL_GRACE_S = 5
 
 # Default max jobs running at once, GLOBAL across all agents (JOB_MAX_CONCURRENT
 # overrides, read LIVE at spawn; 0 disables the limit).
-_JOB_MAX_CONCURRENT_DEFAULT = 4
+_JOB_MAX_CONCURRENT_DEFAULT = 16
 
 
 def _strip_job_marker(text):

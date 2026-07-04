@@ -531,7 +531,7 @@ is told the job failed to start. An interrupted (`!stop`) run never spawns its j
 
 **Concurrency limit (`JOB_MAX_CONCURRENT`).** The limit is GLOBAL across all
 agents (it protects the machine): `_start_job` reads the env var LIVE per spawn
-(default `_JOB_MAX_CONCURRENT_DEFAULT` = 4; `0` disables) and counts ALL
+(default `_JOB_MAX_CONCURRENT_DEFAULT` = 16; `0` disables) and counts ALL
 persisted `jobs.json` entries, running or awaiting delivery; an entry parked by
 `_reattach_jobs` for a not-live agent holds a slot until that agent returns or
 the operator hand-edits the store. At the limit the spawn is DECLINED, never

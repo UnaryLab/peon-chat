@@ -162,7 +162,7 @@ Each agent is its own Slack bot that you address by name.
    (both configurable in `.env`, `0` disables either): a job is killed after
    `AGENT_TIMEOUT_MIN` minutes (the same knob that bounds a live CLI run;
    default 2880) and its result delivered with a
-   "timed out" label, and at most `JOB_MAX_CONCURRENT` jobs (default 4, global
+   "timed out" label, and at most `JOB_MAX_CONCURRENT` jobs (default 16, global
    across all agents) run at once; an over-limit request is declined with a
    note, never queued.
 
