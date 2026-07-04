@@ -13,3 +13,4 @@ __pycache__/
 
 # Generated from agents.json via `python -m src manifest --write`
 manifests/
+.tokensave
