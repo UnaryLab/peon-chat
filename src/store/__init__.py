@@ -1,8 +1,8 @@
-"""Vendor-neutral persistence stores (sessions, overrides, crons, workdir).
+"""Vendor-neutral persistence stores (sessions, overrides, crons, jobs, workdir).
 
 The public surface used by app.py and the runners. The JSON stores (sessions,
-overrides, crons) anchor on store.base (the shared lock + path resolution), so
-their files live together beside sessions.json and SESSIONS_PATH redirects them
+overrides, crons, jobs) anchor on store.base (the shared lock + path resolution),
+so their files live together beside sessions.json and SESSIONS_PATH redirects them
 all at once; workdir is a path-only scheme under WORKDIR_BASE (no lock, no JSON).
 """
 
@@ -13,6 +13,11 @@ from .crons import (  # noqa: F401
     list_crons,
     remove_cron,
     set_cron_enabled,
+)
+from .jobs import (  # noqa: F401
+    add_job,
+    list_jobs,
+    remove_job,
 )
 from .overrides import clear_override, get_override, set_override  # noqa: F401
 from .sessions import (  # noqa: F401

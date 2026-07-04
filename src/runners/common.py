@@ -46,7 +46,7 @@ def _stream_enabled():
 def _int_env(name, default):
     """Read an int env var, tolerating malformed/empty values.
 
-    A malformed value (e.g. CLAUDE_TIMEOUT_MIN=90m) must not raise at import
+    A malformed value (e.g. AGENT_TIMEOUT_MIN=90m) must not raise at import
     time and kill the whole process at startup; it logs a warning and falls
     back to `default`. Missing/empty also falls back (silently).
     """
@@ -58,6 +58,18 @@ def _int_env(name, default):
     except ValueError:
         logger.warning("ignoring malformed %s=%r; using default %s", name, raw, default)
         return default
+
+
+# The ONE timeout knob (AGENT_TIMEOUT_MIN), in MINUTES; 0 disables the timeout.
+# Single source of the name and the default for all three enforcement sites:
+# both runners' DEFAULT_TIMEOUT_MIN (read once at import) and the background-job
+# watcher (read live at watcher (re)start).
+AGENT_TIMEOUT_DEFAULT_MIN = 2880  # 2 days
+
+
+def agent_timeout_min():
+    """The AGENT_TIMEOUT_MIN value in minutes (malformed -> warning + default)."""
+    return _int_env("AGENT_TIMEOUT_MIN", AGENT_TIMEOUT_DEFAULT_MIN)
 
 
 def drain_stderr(proc):

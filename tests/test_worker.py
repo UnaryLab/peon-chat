@@ -223,6 +223,56 @@ def test_run_and_update_errored_partial_keeps_streamed_text(monkeypatch, tmp_pat
     assert "hit an error" not in posted["text"]
 
 
+def test_run_and_update_errored_partial_keeps_prose_after_midtext_mention(
+    monkeypatch, tmp_path
+):
+    # The errored-partial final post uses PARSE-based marker removal, not the
+    # blind mid-stream strips: prose AFTER a mid-text `<<job:` mention survives
+    # (a blind strip deleted from the mention to end-of-text).
+    if not _HAVE_APP:
+        return
+    assert _appmod is not None
+    sessions = str(tmp_path / "sessions.json")
+    overrides = str(tmp_path / "overrides.json")
+    monkeypatch.setattr(claude_runner, "_sessions_path", lambda: sessions)
+    monkeypatch.setattr(claude_runner, "_overrides_path", lambda: overrides)
+    monkeypatch.setenv("WORKDIR_BASE", str(tmp_path / "wd"))
+
+    posted = {}
+
+    class _Runner:
+        @staticmethod
+        def answer(
+            agent,
+            prompt,
+            prior,
+            overrides=None,
+            on_update=None,
+            cancel=None,
+            on_session=None,
+        ):
+            on_update("I ran <<job: ls>> for you earlier. Now the summary: all good.")
+            raise claude_runner.ClaudeRunError("claude exited with code 1: boom")
+
+    class _Client:
+        def chat_update(self, channel=None, ts=None, text=None):
+            posted["text"] = text
+            return {"ok": True}
+
+        def files_upload_v2(self, **kwargs):
+            return {"ok": True}
+
+    monkeypatch.setattr(_appmod.runners, "get_runner", lambda backend: _Runner)
+
+    _appmod._run_and_update(
+        _Client(), "C1", "TS1", _FILE_AGENT, "summarize", "T_err_mid"
+    )
+
+    # The prose tail after the mid-text mention is preserved verbatim.
+    assert "Now the summary: all good." in posted["text"]
+    assert "send any message to continue" in posted["text"]
+
+
 def test_run_and_update_no_marker_uploads_nothing(monkeypatch, tmp_path):
     # A plain reply (no marker) uploads nothing, even when the workdir has files.
     if not _HAVE_APP:

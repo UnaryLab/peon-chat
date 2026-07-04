@@ -5,10 +5,10 @@ This is the single seam both entrypoints use:
 
   - src/__main__.py calls load_env() as its very first executable code, before
     any module that reads env at import time (notably the runners'
-    *_TIMEOUT_MIN defaults; the store paths are read live per access). Loading
-    here, first and with override=True, makes a value set in .env (a
-    *_TIMEOUT_MIN, SESSIONS_PATH, ...) beat both the shell and the import-time
-    defaults.
+    AGENT_TIMEOUT_MIN-derived defaults; the store paths are read live per
+    access). Loading here, first and with override=True, makes a value set in
+    .env (AGENT_TIMEOUT_MIN, SESSIONS_PATH, ...) beat both the shell and the
+    import-time defaults.
 
   - src/app.main() calls it too, so running app directly is self-sufficient.
     The reload is idempotent (override=True re-applies the same values).

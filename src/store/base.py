@@ -82,6 +82,21 @@ def _save_dict_store(data, path):
     _atomic_write_json(data, path)
 
 
+def _load_list_store(path):
+    """Load a list-shaped JSON store (crons OR jobs); missing/corrupt/non-list -> []."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _save_list_store(data, path):
+    """Persist a list-shaped JSON store (pretty, deterministic key order, atomic)."""
+    _atomic_write_json(data, path)
+
+
 def _sibling_store_path(filename):
     """Resolve a per-thread JSON store that lives beside the sessions store.
 

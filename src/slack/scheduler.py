@@ -255,7 +255,7 @@ def _fire_cron(entry, live):
     if handler_entry is None:
         logger.warning("cron %s: agent %r is not live; skipping", entry.get("id"), name)
         return
-    agent = next((a for a in agents.REGISTRY if a["name"] == name), None)
+    agent = agents.get(name)
     if agent is None:
         logger.warning(
             "cron %s: agent %r not in registry; skipping", entry.get("id"), name

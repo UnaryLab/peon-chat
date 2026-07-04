@@ -42,19 +42,20 @@ import time
 from src import agents
 from src.runners.common import (
     _cwd_from_overrides,
-    _int_env,
     _stream_enabled,
+    agent_timeout_min,
     drain_stderr,
     format_process_failure,
     safe_on_update,
 )
 
-# Default timeout for a single codex run, in MINUTES. A run can take
-# 10s..minutes. Read as minutes and converted to seconds (*60) at the call site
-# for subprocess.run; default 2880 minutes (2 days).
-# A malformed value is tolerated (warning + default) so a bad .env cannot kill
-# the process at import time.
-DEFAULT_TIMEOUT_MIN = _int_env("CODEX_TIMEOUT_MIN", 2880)
+# Default timeout for a single codex run, in MINUTES, from AGENT_TIMEOUT_MIN
+# (the ONE knob shared with the claude runner and the job watcher; name and
+# default live in common.agent_timeout_min). Read ONCE at import (a change needs
+# a restart) and converted to seconds (*60) at the call site; 0 means NO timeout
+# (None passed to the subprocess wait). A malformed value is tolerated (warning
+# + default) so a bad .env cannot kill the process at import time.
+DEFAULT_TIMEOUT_MIN = agent_timeout_min()
 
 
 # Model and reasoning effort come SOLELY from the agent's agents.json entry
@@ -390,7 +391,9 @@ def run_codex(
     """
     if timeout is None:
         # DEFAULT_TIMEOUT_MIN is in minutes; subprocess.run wants seconds.
-        timeout = DEFAULT_TIMEOUT_MIN * 60
+        # 0 disables: None means no deadline on BOTH paths (subprocess.run
+        # timeout=None and the streaming proc.wait(timeout=None) wait forever).
+        timeout = DEFAULT_TIMEOUT_MIN * 60 if DEFAULT_TIMEOUT_MIN > 0 else None
 
     fd, last_message_file = tempfile.mkstemp(prefix="codex-last-", suffix=".txt")
     os.close(fd)

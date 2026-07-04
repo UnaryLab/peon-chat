@@ -5,17 +5,23 @@ Slack-native scheduled runs. Each entry is a dict:
    "thread_ts": str, "prompt": str, "enabled": bool}
 Lives as a SIBLING of sessions.json (so SESSIONS_PATH redirects it with no new
 env var), lock-guarded like the other stores. The top-level shape is a LIST (not
-the dict the session/override stores use), so it has its own load/save below.
+the dict the session/override stores use), so it loads/saves via the shared
+list-store pair in store.base (_load_list_store/_save_list_store).
 Note: Claude Code has its own /schedule (cloud routines); THIS is the
 Slack-native equivalent the user asked for, self-contained in this process.
 """
 
 from __future__ import annotations
 
-import json
 import uuid
 
-from .base import _SESSIONS_LOCK, _atomic_write_json, _resolve_path, _sibling_store_path
+from .base import (
+    _SESSIONS_LOCK,
+    _load_list_store,
+    _resolve_path,
+    _save_list_store,
+    _sibling_store_path,
+)
 
 
 def _crons_path():
@@ -23,27 +29,12 @@ def _crons_path():
     return _sibling_store_path("crons.json")
 
 
-def _load_crons(path):
-    """Load the cron list from `path`; a missing/corrupt/non-list file -> []."""
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return []
-    return data if isinstance(data, list) else []
-
-
-def _save_crons(crons, path):
-    """Persist the cron list to `path` (pretty, deterministic key order, atomic)."""
-    _atomic_write_json(crons, path)
-
-
 def list_crons(path=None):
     """Return the persisted list of cron entries (a fresh list, possibly empty)."""
     if path is None:
         path = _resolve_path("_crons_path", _crons_path)
     with _SESSIONS_LOCK:
-        return _load_crons(path)
+        return _load_list_store(path)
 
 
 def add_cron(schedule, agent, channel, thread_ts, prompt, cron_id=None, path=None):
@@ -67,9 +58,9 @@ def add_cron(schedule, agent, channel, thread_ts, prompt, cron_id=None, path=Non
         "enabled": True,
     }
     with _SESSIONS_LOCK:
-        crons = _load_crons(path)
+        crons = _load_list_store(path)
         crons.append(entry)
-        _save_crons(crons, path)
+        _save_list_store(crons, path)
     return entry
 
 
@@ -78,11 +69,11 @@ def remove_cron(cron_id, path=None):
     if path is None:
         path = _resolve_path("_crons_path", _crons_path)
     with _SESSIONS_LOCK:
-        crons = _load_crons(path)
+        crons = _load_list_store(path)
         kept = [c for c in crons if c.get("id") != cron_id]
         if len(kept) == len(crons):
             return False
-        _save_crons(kept, path)
+        _save_list_store(kept, path)
         return True
 
 
@@ -91,12 +82,12 @@ def set_cron_enabled(cron_id, enabled, path=None):
     if path is None:
         path = _resolve_path("_crons_path", _crons_path)
     with _SESSIONS_LOCK:
-        crons = _load_crons(path)
+        crons = _load_list_store(path)
         found = False
         for c in crons:
             if c.get("id") == cron_id:
                 c["enabled"] = bool(enabled)
                 found = True
         if found:
-            _save_crons(crons, path)
+            _save_list_store(crons, path)
         return found

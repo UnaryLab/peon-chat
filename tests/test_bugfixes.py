@@ -382,7 +382,8 @@ def test_codex_reply_file_tolerates_non_utf8():
 
 
 # ---------------------------------------------------------------------------
-# Bug 7: malformed *_TIMEOUT_MIN env values must not kill the process at import
+# Bug 7: a malformed AGENT_TIMEOUT_MIN env value must not kill the process at
+# import: _int_env warns and falls back to the default.
 # ---------------------------------------------------------------------------
 
 
@@ -395,3 +396,14 @@ def test_int_env_tolerates_malformed_values(monkeypatch):
     assert common._int_env("PEON_TEST_TIMEOUT", 2880) == 2880
     monkeypatch.delenv("PEON_TEST_TIMEOUT", raising=False)
     assert common._int_env("PEON_TEST_TIMEOUT", 2880) == 2880
+
+
+def test_agent_timeout_min_reads_the_one_knob(monkeypatch):
+    """agent_timeout_min is the single source: it reads AGENT_TIMEOUT_MIN and
+    falls back to AGENT_TIMEOUT_DEFAULT_MIN on a malformed/missing value."""
+    monkeypatch.setenv("AGENT_TIMEOUT_MIN", "15")
+    assert common.agent_timeout_min() == 15
+    monkeypatch.setenv("AGENT_TIMEOUT_MIN", "90m")  # malformed -> default
+    assert common.agent_timeout_min() == common.AGENT_TIMEOUT_DEFAULT_MIN
+    monkeypatch.delenv("AGENT_TIMEOUT_MIN", raising=False)
+    assert common.agent_timeout_min() == common.AGENT_TIMEOUT_DEFAULT_MIN

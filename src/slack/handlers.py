@@ -21,7 +21,7 @@ import time
 from src import runners, store
 from src.runners import claude_runner, codex_runner
 
-from . import control, files, interrupt, quotes, usage
+from . import control, files, interrupt, jobs, quotes, usage
 
 logger = logging.getLogger("peon")
 
@@ -227,10 +227,14 @@ def _make_stream_updater(client, channel, placeholder_ts, now=None):
 
     def _update(text, force=False):
         nonlocal last_post, last_text
-        # Scrub any (possibly partial) <<files: ...>> marker so it never flashes
-        # mid-stream; the final update strips it for real via _parse_file_marker.
-        # Then cap the partial so a long stream never trips Slack's msg_too_long.
-        text = _truncate_for_slack(files._strip_file_marker(text))
+        # Scrub any (possibly partial) trailing <<job: ...>> / <<files: ...>>
+        # marker so neither flashes mid-stream (job first: it is the trailing-most
+        # in the combined order); the final update strips them for real via the
+        # parse helpers. Then cap the partial so a long stream never trips
+        # Slack's msg_too_long.
+        text = _truncate_for_slack(
+            files._strip_file_marker(jobs._strip_job_marker(text))
+        )
         # Skip empties (Slack rejects them) and no-op re-posts (a force-flush on a
         # tool_use block_stop carries the SAME text as the text block before it).
         if not text or text == last_text:
@@ -286,6 +290,11 @@ def _run_and_update(
     `<<files: a, b>>` marker; we strip that marker from the shown reply and upload
     just the named files (resolved inside the workdir; see _maybe_upload_named).
     No marker (the default) uploads nothing.
+
+    BACKGROUND JOB: a run requests detached long work ONLY by ending its reply
+    with a `<<job: cmd>>` marker (stripped the same way; parsed BEFORE the files
+    marker, see below); the command is spawned detached after the final reply
+    posts and its completion is delivered back later (see src/slack/jobs.py).
     """
     # Register a cancel token so a "!stop" in this thread can SIGINT the run; the
     # finally below always drops it. See src.slack.interrupt / common.Interrupt.
@@ -332,12 +341,21 @@ def _run_and_update(
             "BACKGROUND (e.g. run_in_background) is killed before it finishes and "
             "its work is lost. Do all long or multi-step work (surveys, research, "
             "builds) synchronously in the FOREGROUND within this turn; it is fine "
-            "for the reply to take a while.\n\n"
+            "for the reply to take a while. The ONE sanctioned exception is the "
+            "background-job marker described below.\n\n"
             "If -- and only if -- the user explicitly asks you to produce, send, "
             "attach, or share a file, end your reply with a line "
             "`<<files: name1, name2>>` naming the files (paths in your working "
             "directory) to deliver. Otherwise never write that marker and no "
             "files are sent.\n\n"
+            "If -- and only if -- the user explicitly asks for long-running or "
+            "background work, you may end your reply with a line "
+            "`<<job: your shell command>>` naming ONE shell command; the marker "
+            "must sit on its own line at the very end of the reply. After your "
+            "reply posts it is spawned DETACHED in your working directory, keeps "
+            "running after this turn ends, and its exit code and output tail are "
+            "delivered back to this conversation automatically when it finishes. "
+            "Otherwise never write that marker.\n\n"
             f"{prompt}"
         )
         overrides = store.get_override(agent["name"], thread_ts)
@@ -373,9 +391,15 @@ def _run_and_update(
             on_session=on_session,
         )
         store.set_session(agent["name"], thread_ts, session_id)
-        # Split off any `<<files: ...>>` delivery marker BEFORE the interrupt notice
-        # / usage footer are appended, so it is gone from the posted reply and the
-        # named files drive the outbound upload below.
+        # Split off the trailing delivery markers BEFORE the truncation cap and
+        # the interrupt notice / usage footer, so they are gone from the posted
+        # reply and drive the outbound upload / job spawn below. Deterministic
+        # order: the JOB marker is parsed FIRST, then the FILES marker, so a
+        # reply ending `...<<files: a>>\n<<job: cmd>>` (files line, then job
+        # line LAST) triggers both; with the lines the other way around the
+        # files strip leaves the job marker mid-text, i.e. plain prose (the
+        # trailing-only rule).
+        text, job_cmd = jobs._parse_job_marker(text)
         text, upload_names = files._parse_file_marker(text)
         # Cap the body BELOW Slack's 40k chat_update limit AFTER the marker split
         # (file delivery survives) and BEFORE the notice/footer appends (they
@@ -398,6 +422,26 @@ def _run_and_update(
         )
         # Outbound files: upload only the files the run named in its marker.
         files._maybe_upload_named(client, channel, thread_ts, agent, upload_names)
+        # Detached background job: opt-in via the trailing <<job: ...>> marker,
+        # spawned AFTER the final reply posts. _start_job is a Kind-B name
+        # (resolved through the app facade). The reply already posted, so a
+        # spawn failure surfaces as a note in the thread, never by clobbering it.
+        # A !stop'ed run never starts its job: the user asked to cancel the work.
+        if job_cmd and not token.requested:
+            from src import app as _appfacade
+
+            try:
+                _appfacade._start_job(client, agent, channel, thread_ts, job_cmd)
+            except Exception:  # noqa: BLE001 - never let a failed spawn destroy the reply
+                logger.exception("failed to start background job for %s", agent["name"])
+                try:
+                    client.chat_postMessage(
+                        channel=channel,
+                        thread_ts=_reply_thread_ts(thread_ts),
+                        text=":warning: failed to start the background job.",
+                    )
+                except Exception:  # noqa: BLE001 - a Slack hiccup must not raise here
+                    logger.warning("failed to post the job-start failure note")
     except (claude_runner.ClaudeRunError, codex_runner.CodexRunError) as exc:
         if token.requested:
             # Interrupted during a phase we cannot settle gracefully (e.g. a codex
@@ -416,9 +460,14 @@ def _run_and_update(
             # If the run streamed partial text before erroring, keep it (plus a
             # resume note) rather than throwing it away for a bare error. The
             # session id was persisted at run start, so the thread is resumable.
-            partial = _truncate_for_slack(
-                files._strip_file_marker(streamed["text"]).strip()
-            )
+            # PARSE-based marker removal (the success path's helpers), not the
+            # blind strips: this text is FINAL, and a no-closing-requirement
+            # strip after a mid-text marker mention would permanently eat the
+            # prose tail. Only a complete trailing marker is removed; a
+            # genuinely incomplete trailing marker may stay visible (error path).
+            partial, _ = jobs._parse_job_marker(streamed["text"])
+            partial, _ = files._parse_file_marker(partial)
+            partial = _truncate_for_slack(partial.strip())
             if partial:
                 client.chat_update(
                     channel=channel,

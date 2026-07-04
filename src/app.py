@@ -27,6 +27,7 @@ from __future__ import annotations
 
 # Kind-A shared singletons: kept so tests can patch them here and have the patch
 # seen by the submodules that import the SAME object.
+import subprocess  # noqa: F401 - Kind A: tests patch app.subprocess.Popen (the detached job spawn)
 import tempfile  # noqa: F401 - Kind A: tests patch app.tempfile.gettempdir
 
 from slack_bolt.adapter.socket_mode import (  # noqa: F401 - Kind B: tests patch app.SocketModeHandler
@@ -71,6 +72,24 @@ from .slack.files import (  # noqa: F401
     _strip_file_marker,
     _thread_workdir,
     _upload_workdir_files,
+)
+
+# --- Background jobs: <<job:>> marker, spawn, watcher (src/slack/jobs.py) ----
+from .slack.jobs import (  # noqa: F401
+    _JOB_KILL_GRACE_S,
+    _JOB_LIST_CMD_CHARS,
+    _JOB_LOG_TAIL_CHARS,
+    _JOB_MAX_CONCURRENT_DEFAULT,
+    _JOB_POLL_INTERVAL_S,
+    _finish_job,
+    _handle_job_command,
+    _parse_job_marker,
+    _pid_alive,
+    _read_log_tail,
+    _reattach_jobs,
+    _start_job,
+    _strip_job_marker,
+    _watch_job,
 )
 
 # --- Mention/message handling (src/slack/handlers.py) -----------------------

@@ -147,6 +147,11 @@ def reload(path=None):
     return REGISTRY
 
 
+def get(name):
+    """The registry entry named `name`, or None. Reads the LIVE (reloadable) REGISTRY."""
+    return next((a for a in REGISTRY if a["name"] == name), None)
+
+
 def resolve(agent, key, default=""):
     """Resolve a per-agent knob SOLELY from the agent's agents.json entry.
 

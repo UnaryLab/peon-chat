@@ -1,12 +1,12 @@
 """Per-thread control phrases (typed AFTER the mention is stripped).
 
 A message starting with "!" is a standalone command: it updates this thread's
-model/effort override, manages crons, or resets, and acks, WITHOUT running the
-agent. Anchored at the start so a normal prompt that merely contains "!" later is
-unaffected.
+model/effort override, manages crons or background jobs, or resets, and acks,
+WITHOUT running the agent. Anchored at the start so a normal prompt that merely
+contains "!" later is unaffected.
 
-Cross-module dispatch (cron -> scheduler) is NOT a patched-on-facade seam, so it
-is wired with direct package imports.
+Cross-module dispatch (cron -> scheduler, job -> jobs) is NOT a patched-on-facade
+seam, so it is wired with direct package imports.
 """
 
 from __future__ import annotations
@@ -16,13 +16,13 @@ import re
 from src import agents, store
 from src.runners import claude_runner
 
-from . import interrupt, scheduler
+from . import interrupt, jobs, scheduler
 
 # DOTALL so a multi-line phrase (Shift+Enter, e.g. a !cron add whose prompt spans
 # lines) still matches; without it the arg's `.*` stops at the first newline and
 # the whole phrase falls through to the help ack.
 CONTROL_RE = re.compile(
-    r"^!(model|effort|reset|new|cron)\b\s*(.*)$", re.IGNORECASE | re.DOTALL
+    r"^!(model|effort|reset|new|cron|job)\b\s*(.*)$", re.IGNORECASE | re.DOTALL
 )
 
 # The reasoning-effort levels accepted by !effort. Anything else is rejected.
@@ -69,6 +69,8 @@ def _handle_control_phrase(agent, text, thread_ts, say, channel_id=None):
       !cron <sub>         -> manage Slack-native scheduled runs in this thread
                              (add "<expr>" <prompt> | list | remove <id> |
                              on <id> | off <id>); see _handle_cron_command
+      !job <sub>          -> manage THIS agent's background jobs (list |
+                             kill <id>); see jobs._handle_job_command
       !reset              -> clear this thread's overrides (back to defaults)
       !new                -> drop this conversation's stored CLI session so the
                              NEXT message starts a fresh context (overrides,
@@ -151,6 +153,10 @@ def _handle_control_phrase(agent, text, thread_ts, say, channel_id=None):
         scheduler._handle_cron_command(agent, arg, thread_ts, say, channel_id)
         return True
 
+    if command == "job":
+        jobs._handle_job_command(agent, arg, thread_ts, say)
+        return True
+
     # command == "effort"
     level = arg.lower()
     if level not in VALID_EFFORTS:
@@ -169,7 +175,8 @@ def _ack_control_help(agent, thread_ts, say):
     say(
         text=(
             f"Commands: `!model <id>`, `!effort <{'|'.join(VALID_EFFORTS)}>`, "
-            f"`!cron <add|list|remove|on|off>`, `!stop`, `!reset`, `!new`"
+            f"`!cron <add|list|remove|on|off>`, `!job <list|kill>`, `!stop`, "
+            "`!reset`, `!new`"
         ),
         thread_ts=thread_ts,
     )

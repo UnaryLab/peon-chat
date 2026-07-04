@@ -277,6 +277,22 @@ def test_run_claude_raises_on_timeout():
             assert "timed out" in str(exc).lower()
 
 
+def test_run_claude_zero_timeout_disables_deadline(monkeypatch):
+    """AGENT_TIMEOUT_MIN=0 (DEFAULT_TIMEOUT_MIN == 0) means NO timeout: the
+    subprocess is run with timeout=None (wait forever), not a huge number.
+    Patched on src.runners.claude (where run_claude reads the module global);
+    the env var itself is read once at import, so it cannot be re-set here."""
+    from src.runners import claude as claude_mod
+
+    monkeypatch.setattr(claude_mod, "DEFAULT_TIMEOUT_MIN", 0)
+    good = json.dumps({"result": "ok", "is_error": False, "subtype": "success"})
+    with mock.patch(
+        "src.runners.claude_runner.subprocess.run", return_value=_fake_proc(0, good)
+    ) as m:
+        claude_runner.run_claude(CICERO, PROMPT, SID, True)
+    assert m.call_args.kwargs["timeout"] is None
+
+
 # ---------------------------------------------------------------------------
 # codex build_command: exact argv, fresh + resume, model gating
 # ---------------------------------------------------------------------------
@@ -643,3 +659,25 @@ def test_run_codex_raises_on_timeout():
             assert False, "expected CodexRunError"
         except codex_runner.CodexRunError as exc:
             assert "timed out" in str(exc).lower()
+
+
+def test_run_codex_zero_timeout_disables_deadline(monkeypatch):
+    """AGENT_TIMEOUT_MIN=0 (DEFAULT_TIMEOUT_MIN == 0) means NO timeout: the
+    subprocess is run with timeout=None (wait forever), not a huge number.
+    Patched on src.runners.codex (where run_codex reads the module global);
+    the env var itself is read once at import, so it cannot be re-set here."""
+    from src.runners import codex as codex_mod
+
+    monkeypatch.setattr(codex_mod, "DEFAULT_TIMEOUT_MIN", 0)
+    inner = _codex_proc_writing(
+        "a reply", stdout=json.dumps({"type": "thread.started", "thread_id": THREAD_ID})
+    )
+    seen = {}
+
+    def _run(argv, **kwargs):
+        seen.update(kwargs)
+        return inner(argv, **kwargs)
+
+    with mock.patch("src.runners.codex_runner.subprocess.run", side_effect=_run):
+        codex_runner.run_codex(DIJKSTRA, PROMPT, None, True)
+    assert seen["timeout"] is None

@@ -44,6 +44,10 @@ def _default_stream_output_off(monkeypatch):
     """
     monkeypatch.setenv("STREAM_OUTPUT", "0")
     monkeypatch.setenv("SHOW_USAGE", "0")
+    # Timeout / job guardrails: scrub the developer's shell so the tests always
+    # see the code defaults unless a test sets these explicitly.
+    monkeypatch.delenv("AGENT_TIMEOUT_MIN", raising=False)
+    monkeypatch.delenv("JOB_MAX_CONCURRENT", raising=False)
 
 
 @pytest.fixture(autouse=True)

@@ -149,6 +149,22 @@ Each agent is its own Slack bot that you address by name.
 7. **See usage.** Each reply ends with a small one-line footer (context %,
    tokens, cost, duration) unless the operator disabled `SHOW_USAGE` (default
    on); fields that a backend does not report are omitted.
+8. **Run background jobs.** Ask an agent explicitly for long-running or
+   background work (a sweep, a big build, a long download) and it can end its
+   reply with a `<<job: ...>>` marker naming one shell command. The command is
+   started detached in the thread's workdir (it keeps running even if peon
+   restarts), and when it finishes the agent posts a follow-up in the same
+   conversation summarizing the exit code and the output tail (the raw log tail
+   is posted directly if the agent is mid-run at that moment). Like the files
+   marker, only a marker at the very end of the reply counts, and an ordinary
+   reply never starts one. `!job list` / `!job kill <id>` (see the control
+   phrases below) show or terminate that agent's running jobs. Two guardrails
+   (both configurable in `.env`, `0` disables either): a job is killed after
+   `AGENT_TIMEOUT_MIN` minutes (the same knob that bounds a live CLI run;
+   default 2880) and its result delivered with a
+   "timed out" label, and at most `JOB_MAX_CONCURRENT` jobs (default 4, global
+   across all agents) run at once; an over-limit request is declined with a
+   note, never queued.
 
 ### Per-thread control phrases
 
@@ -167,6 +183,8 @@ Shift+Enter):
 | `!cron add "<min hour dom month dow>" <prompt>` | Schedule a recurring run of `<prompt>` in this thread. |
 | `!cron list` | List scheduled crons. |
 | `!cron remove <id>` / `!cron on <id>` / `!cron off <id>` | Delete / enable / disable a cron by id. |
+| `!job list` | List THIS agent's background jobs across all conversations (id, conversation, pid, command). |
+| `!job kill <id>` | Terminate one of this agent's jobs (SIGTERM to its whole process group). The result still arrives via the normal job-completion follow-up; another agent's job id reads as "no such job". |
 
 **One run per thread.** While an agent is still working in a thread, a new
 message to it in that thread is declined with a short "still working" note:
@@ -331,9 +349,9 @@ warning, so you can run with just one configured agent.
 **`.env` is authoritative: it overrides shell-exported environment variables.**
 It is loaded first and with `override=True`, so a value in `.env` wins over any
 matching variable already exported in your shell. This applies to every config
-var, including `SESSIONS_PATH` and the `*_TIMEOUT_MIN` timeouts (the
+var, including `SESSIONS_PATH` and the `AGENT_TIMEOUT_MIN` timeout (the
 session-store path is resolved live at store access, so it honors `.env` even
-though it is read early at import time). A malformed `*_TIMEOUT_MIN` (e.g.
+though it is read early at import time). A malformed `AGENT_TIMEOUT_MIN` (e.g.
 `90m`) logs a warning and the default is used; it never kills the process at
 startup.
 

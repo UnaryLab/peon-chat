@@ -41,19 +41,46 @@ _SKIP_DIRS = {
     ".venv",
 }
 
+
+def _trailing_marker_res(keyword):
+    """Compile the (parse, strip) regex pair for a trailing `<<keyword: ...>>` marker.
+
+    Owner of the tempered-dot pattern used by the FILES marker (the job marker
+    in jobs.py owns its own greedy pair: a shell command must be able to carry
+    ">>"). BOTH regexes act ONLY on a TRAILING marker (anchored at end of
+    text): a reply that merely MENTIONS the marker syntax mid-text is plain
+    prose and triggers nothing (and loses nothing after it). The marker body
+    excludes ">>" (tempered dot) so a mid-text complete marker followed by
+    prose can never anchor to the end. The parse regex captures the trailing
+    complete marker's body (group 1); the strip regex also scrubs a
+    partial/unterminated trailing marker still mid-stream (e.g. "<<files: pl")
+    so it never flashes in the streamed reply.
+    """
+    return (
+        re.compile(rf"<<\s*{keyword}\s*:\s*((?:(?!>>).)*)>>\s*$", re.IGNORECASE),
+        re.compile(rf"\s*<<\s*{keyword}\s*:(?:(?!>>).)*(?:>>)?\s*$", re.IGNORECASE),
+    )
+
+
+def _split_trailing_marker(text, marker_re, strip_re):
+    """Split text into (clean_text, body): body from the TRAILING complete marker.
+
+    Core of _parse_file_marker (jobs._parse_job_marker rolls its own: its
+    greedy strip regex must only apply on a complete-marker match): no trailing
+    complete marker -> (text, "") with any partial trailing marker still
+    stripped from clean_text (the marker is emitted last, so nothing real
+    follows it).
+    """
+    if not text:
+        return text, ""
+    match = marker_re.search(text)
+    body = match.group(1) if match else ""
+    return strip_re.sub("", text).rstrip(), body
+
+
 # Outbound delivery is opt-in: a run requests it by ENDING its reply with a
 # `<<files: a, b>>` marker naming the files. Default (no marker) uploads nothing.
-# BOTH regexes act ONLY on a TRAILING marker (anchored at end of text): a reply
-# that merely MENTIONS the marker syntax mid-text is plain prose and triggers
-# nothing (and loses nothing after it). The marker body excludes ">>" (tempered
-# dot) so a mid-text complete marker followed by prose can never anchor to the
-# end. _RE captures the trailing complete marker's names (group 1); _STRIP_RE
-# also scrubs a partial/unterminated trailing marker still mid-stream (e.g.
-# "<<files: pl") so it never flashes in the streamed reply.
-_FILES_MARKER_RE = re.compile(r"<<\s*files\s*:\s*((?:(?!>>).)*)>>\s*$", re.IGNORECASE)
-_FILES_MARKER_STRIP_RE = re.compile(
-    r"\s*<<\s*files\s*:(?:(?!>>).)*(?:>>)?\s*$", re.IGNORECASE
-)
+_FILES_MARKER_RE, _FILES_MARKER_STRIP_RE = _trailing_marker_res("files")
 
 
 def _strip_file_marker(text):
@@ -67,16 +94,10 @@ def _parse_file_marker(text):
     """Split text into (clean_text, names): names from the TRAILING complete marker.
 
     No trailing marker -> (text, []); a mid-text marker mention is plain text and
-    triggers nothing. The trailing marker is stripped from clean_text (the marker
-    is emitted last, so nothing real follows it).
+    triggers nothing.
     """
-    if not text:
-        return text, []
-    match = _FILES_MARKER_RE.search(text)
-    names = []
-    if match:
-        names = [n.strip() for n in match.group(1).split(",") if n.strip()]
-    clean = _FILES_MARKER_STRIP_RE.sub("", text).rstrip()
+    clean, body = _split_trailing_marker(text, _FILES_MARKER_RE, _FILES_MARKER_STRIP_RE)
+    names = [n.strip() for n in body.split(",") if n.strip()]
     return clean, names
 
 

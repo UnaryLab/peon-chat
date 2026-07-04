@@ -15,30 +15,30 @@ from tests.helpers import _PROJECT_ROOT
 
 
 def test_load_env_dotenv_beats_shell(monkeypatch, tmp_path):
-    """.env wins over a shell-exported var: load_env(..., override=True) makes a
-    CLAUDE_TIMEOUT_MIN in the .env file replace one already exported in the
+    """.env wins over a shell-exported var: load_env(..., override=True) makes an
+    AGENT_TIMEOUT_MIN in the .env file replace one already exported in the
     shell. (Uses a still-live env var; model/effort no longer come from env.)"""
     from src.env import load_env
 
     # Simulate a shell-exported value that should LOSE to .env.
-    monkeypatch.setenv("CLAUDE_TIMEOUT_MIN", "111")
+    monkeypatch.setenv("AGENT_TIMEOUT_MIN", "111")
     env_file = tmp_path / ".env"
-    env_file.write_text("CLAUDE_TIMEOUT_MIN=222\n", encoding="utf-8")
+    env_file.write_text("AGENT_TIMEOUT_MIN=222\n", encoding="utf-8")
 
     assert load_env(env_file) is True  # dotenv installed -> attempted
-    assert os.environ["CLAUDE_TIMEOUT_MIN"] == "222"  # .env beat the shell
+    assert os.environ["AGENT_TIMEOUT_MIN"] == "222"  # .env beat the shell
 
 
 def test_load_env_missing_file_is_noop(monkeypatch, tmp_path):
     """A missing .env is a silent no-op (no crash, no clobber of existing vars)."""
     from src.env import load_env
 
-    monkeypatch.setenv("CLAUDE_TIMEOUT_MIN", "111")
+    monkeypatch.setenv("AGENT_TIMEOUT_MIN", "111")
     missing = tmp_path / "does-not-exist.env"
     assert not missing.exists()
 
     load_env(missing)  # must not raise
-    assert os.environ["CLAUDE_TIMEOUT_MIN"] == "111"  # untouched
+    assert os.environ["AGENT_TIMEOUT_MIN"] == "111"  # untouched
 
 
 def test_sessions_path_from_env_redirects_store(monkeypatch, tmp_path):

@@ -37,7 +37,7 @@ from slack_bolt import App
 
 from src import agents, store
 
-from . import handlers, scheduler
+from . import handlers, jobs, scheduler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -335,6 +335,12 @@ def main():
     )
     scheduler_thread.start()
     logger.info("cron scheduler armed (60s tick; reads crons.json)")
+
+    # Re-attach background jobs persisted by a previous process lifetime: each
+    # surviving jobs.json entry gets a watcher that polls its pid and delivers
+    # the completion back into its thread (exit code unknown after a restart).
+    # Crash-safe: a broken store or one bad entry never blocks startup.
+    jobs._reattach_jobs(live)
 
     # Block the main thread in the reload loop so the connection threads keep
     # running; each SIGHUP wakes it to reconcile. (Replaces the old idle wait.)

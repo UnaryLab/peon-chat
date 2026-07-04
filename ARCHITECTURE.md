@@ -22,10 +22,11 @@ peon/                          project root
     app.py                     FACADE over src/slack/ (re-exports main/reconcile/build_app_for + the test patch surface)
     store/                     vendor-NEUTRAL persistence package (no slack_bolt, no runner deps)
       __init__.py              public store surface used by app + both runners
-      base.py                  single source of truth: shared lock (_SESSIONS_LOCK), path resolution (_sessions_path/_sibling_store_path), dict load/save, _resolve_path seam
+      base.py                  single source of truth: shared lock (_SESSIONS_LOCK), path resolution (_sessions_path/_sibling_store_path), dict + list load/save, _resolve_path seam
       sessions.py              sessions.json: (agent, thread) -> session_id (get/set/clear/get_or_create)
       overrides.py             overrides.json: (agent, thread) -> {model?, effort?}
       crons.py                 crons.json: list of cron entries (add/list/remove/set_enabled)
+      jobs.py                  jobs.json: list of background-job entries (add/list/remove)
       workdir.py               get_workdir: per-thread workdir path scheme (the run's cwd)
     runners/                   the runner subpackage
       __init__.py              get_runner(backend) -> the runner facade module (claude or codex); the answer-seam contract
@@ -38,10 +39,11 @@ peon/                          project root
       __init__.py              package note; app.py facade re-exports from here
       app.py                   Bolt + Socket Mode build/reconcile/main + signal handling (one App per agent, one process)
       handlers.py              mention/message dispatch: _handle, _run_and_update, the streaming updater
-      control.py               !model/!effort/!reset/!new/!cron + !stop interrupt dispatcher (CONTROL_RE)
+      control.py               !model/!effort/!reset/!new/!cron/!job + !stop interrupt dispatcher (CONTROL_RE)
       interrupt.py             !stop run-interrupt registry + phrase matcher (per-thread Interrupt tokens)
       scheduler.py             in-process cron loop (_scheduler_tick) + cron_matches
       files.py                 attachment download (inbound) / upload (outbound)
+      jobs.py                  <<job:>> marker, detached spawn, completion watcher, restart re-attach, !job list/kill
       usage.py                 _format_usage / _usage_enabled (SHOW_USAGE footer)
       quotes.py                random_quote(): placeholder quotes from quotes.json (mtime-cached, graceful)
   tests/
@@ -77,15 +79,17 @@ keep working:
   runner facades that is `subprocess` (`subprocess.run`/`.Popen` is patched via
   `claude_runner.subprocess` / `codex_runner.subprocess`; the implementation
   module calls through its own bare `import subprocess`, the same process-wide
-  module object). In the `app` facade it is `tempfile` and the `runners` package
-  object (`app.tempfile.gettempdir`, `app.runners.get_runner`).
+  module object). In the `app` facade it is `subprocess` (the detached
+  background-job spawn, `app.subprocess.Popen`), `tempfile`, and the `runners`
+  package object (`app.tempfile.gettempdir`, `app.runners.get_runner`).
 - **Kind-B, lazy-facade-resolved names.** A set of function/class names is resolved
   by their cross-module callers THROUGH the facade via a lazy in-body
   `from src import app as _appfacade` (so a `setattr(app, name, ...)` in a test is
   honored at call time): `_run_and_update`, `_scheduler_tick`, `_fire_cron`,
   `build_app_for`, `SocketModeHandler`, `reconcile`, `_attachments_dir`,
-  `_http_get_bytes`. The store layer's `_resolve_path` seam (above) is the same
-  idea for the store-path resolvers patched on `claude_runner`.
+  `_http_get_bytes`, and the background-job seams `_start_job` / `_watch_job` /
+  `_finish_job` / `_pid_alive`. The store layer's `_resolve_path` seam (above) is
+  the same idea for the store-path resolvers patched on `claude_runner`.
 
 When adding a symbol to a store/slack/runner submodule that a test references on
 one of these paths, re-export it from the relevant facade so the seam stays
@@ -292,17 +296,17 @@ silently read truncated JSON as empty, wiping every session).
 
 ### Per-thread stores
 
-`sessions.json` is one of THREE per-thread JSON stores, all owned by the
+`sessions.json` is one of FOUR per-thread JSON stores, all owned by the
 vendor-neutral `src/store/` package (`store.base` is the single source of truth
 for the shared lock `_SESSIONS_LOCK` and the path resolution `_sessions_path` /
-`_sibling_store_path`; `sessions.py` / `overrides.py` / `crons.py` /
+`_sibling_store_path`; `sessions.py` / `overrides.py` / `crons.py` / `jobs.py` /
 `workdir.py` are the per-store modules). The `claude_runner`
 facade re-exports all of them for back-compat. They all sit beside
 `sessions.json` via `_sibling_store_path(<name>)`, so the single `SESSIONS_PATH`
 env var redirects every store at once (no per-store env var). The dict-shaped
-stores share `_load_dict_store`/`_save_dict_store`; the list-shaped cron store has
-its own load/save. All three write atomically (temp file + `os.replace`, see
-above):
+stores share `_load_dict_store`/`_save_dict_store`; the list-shaped cron and job
+stores share `_load_list_store`/`_save_list_store` (both pairs in store.base).
+All four write atomically (temp file + `os.replace`, see above):
 
 - **`sessions.json`** (dict): `(agent, thread) -> session_id`, above. The `!new`
   control phrase clears one key (`clear_session`), so the next message in that
@@ -311,10 +315,16 @@ above):
   `!model`/`!effort`/`!reset` control phrases.
 - **`crons.json`** (list): `{id, schedule, agent, channel, thread_ts, prompt,
   enabled}` entries (see [Cron](#cron-slack-native-in-process)).
+- **`jobs.json`** (list): `{id, agent, channel, thread_ts, pid, logfile, cmd,
+  started_ts}` background-job entries (see
+  [Background jobs](#background-jobs-job-detached));
+  `thread_ts` is the conversation KEY, so it may be a DM channel id. A persisted
+  entry means "still running (or awaiting re-attach after a restart)"; the
+  completion watcher removes it.
 
 When a store fn is called with `path=None`, `store.base._resolve_path(attr,
 fallback)` resolves the JSON path through the LIVE `claude_runner.<attr>` (e.g.
-`_sessions_path` / `_overrides_path` / `_crons_path`), falling back to the store's
+`_sessions_path` / `_overrides_path` / `_crons_path` / `_jobs_path`), falling back to the store's
 own local resolver. In production `claude_runner.<attr>` IS that local resolver
 (re-exported), so it is behavior-identical; the seam exists so a test that does
 `setattr(claude_runner, "_sessions_path", ...)` to redirect `SESSIONS_PATH` is
@@ -356,7 +366,7 @@ character instead of raising through as an unexpected error.
 ## Control phrases (one dispatcher)
 
 `app._handle_control_phrase` is the single parser/dispatcher: it matches
-`CONTROL_RE` (`^!(model|effort|reset|new|cron)\b ...`, compiled with DOTALL so a
+`CONTROL_RE` (`^!(model|effort|reset|new|cron|job)\b ...`, compiled with DOTALL so a
 multi-line phrase -- e.g. a `!cron add` whose prompt spans lines -- still
 matches instead of falling through to the help ack) on the de-mentioned
 prompt and routes to the right handler. A handled phrase acks into the thread and
@@ -366,7 +376,16 @@ conversation's `sessions.json` key (`clear_session`) so the next message starts 
 fresh CLI context (overrides/crons/workdir untouched; declined with a busy ack
 while a run is in flight for the key, since the worker's end-of-run `set_session`
 would resurrect the cleared id -- checked read-only via `interrupt.is_running`);
-`!cron add|list|remove|on|off` mutates `crons.json`. Ahead of the `!`-gate the dispatcher
+`!cron add|list|remove|on|off` mutates `crons.json`; `!job list|kill <id>`
+(`jobs._handle_job_command`) manages the DISPATCHING agent's background jobs,
+scoped to that agent across ALL conversations (another agent's job id reads as
+"no such job"): `list` reads `jobs.json` (one line per job: id, conversation
+key, pid, command ellipsized at `_JOB_LIST_CMD_CHARS`), and `kill <id>` SIGTERMs
+the job's whole process group (`os.killpg`; the spawn's `start_new_session`
+makes the pid a group leader) WITHOUT touching the `jobs.json` entry -- the
+watcher owns delivery + removal, so a kill settles through the normal completion
+flow (an unsignalable group -- gone, a pid recycled to another uid, or a
+malformed pid -- acks as already finished). Ahead of the `!`-gate the dispatcher
 also matches the interrupt phrases (`!stop` / bare `stop` / `ctrl-c` / `^c` /
 `interrupt`) and signals the thread's in-flight run (see
 [Run interrupt](#run-interrupt-stop)).
@@ -458,6 +477,136 @@ escaping it are rejected) and uploaded via `files_upload_v2`. Both need the
 `files:read` / `files:write` bot scopes. No marker (the default), or no workdir
 resolved for the thread, uploads nothing.
 
+## Background jobs (`<<job:>>`, detached)
+
+A run's turn is a single non-interactive CLI process: anything it backgrounds
+dies with it. The sanctioned escape hatch is the trailing
+`<<job: <shell command>>>` marker (src/slack/jobs.py), following the SAME
+trailing-only rule as `<<files:>>` (a mid-text mention is plain prose; the
+per-turn preamble tells the agent to emit it only when the user explicitly asks
+for long/background work). The two markers use DIFFERENT body patterns: the
+files pair keeps the tempered-dot helper (`files._trailing_marker_res`, body
+cannot contain `>>`), while the job marker owns its own GREEDY pair in
+src/slack/jobs.py so a shell command CAN contain `>>` (append redirects,
+heredocs). Three rules guard the body. The job opener must START A LINE
+(`(?:^|\n)[ \t]*` in both the parse and strip regexes): a mid-line prose
+mention never anchors or strips, even when the reply happens to end in `>>`.
+The parse anchors at the LAST line-start `<<job:` occurrence and requires the
+closing `>>` at the very end of the reply. And the OPENER LINE discriminates
+single-line from multi-line bodies: if the marker's opening line itself
+contains a `>>`, the marker must be SINGLE-LINE and its closing `>>` must end
+the reply, so a line-start quoted example (`<<job: make all>>` followed by
+more prose in a reply that happens to end in `>>`) is prose, never shell; only
+an opener line with NO `>>` may span newlines (multi-line heredoc commands
+work, greedy with DOTALL to the reply-final `>>`). The one limitation this
+buys: a multi-line body whose FIRST line contains `>>` is prose; put `>>`
+appends on a single-line marker or on later lines of a heredoc. A command
+ending in `>` works too (a reply ending `...>>>`: the final two `>` close the
+marker, the rest stays in the command). The one carve-out: the job body may
+not contain another marker opener (`<<job:` / `<<files:`), so a trailing
+files marker after a mid-text job mention is never swallowed.
+
+**Marker order (deterministic, tested).** In `_run_and_update` the JOB marker is
+parsed FIRST, then the FILES marker, both BEFORE the 39,000-char Slack cap. So a
+reply ending `<<files: a>>` then `<<job: cmd>>` (job line LAST) triggers both;
+with the lines the other way around the files strip leaves the job marker
+mid-text, i.e. plain prose. Both markers are also scrubbed from streamed
+partials so neither flashes mid-stream.
+
+**Spawn (`_start_job`).** After the final reply posts (never before: a spawn
+failure must not clobber the reply; it surfaces as a warning note in the
+thread), the worker resolves `_start_job` through the app facade and spawns
+`/bin/sh -c <cmd>` with `start_new_session=True` (its own session, so it
+survives the turn AND this process), `stdin=DEVNULL`, and stdout+stderr into
+`job-<id>.log` inside the thread workdir (also the cwd). The command runs fully
+unsandboxed like every run in peon. The entry `{id, agent, channel, thread_ts,
+pid, logfile, cmd, started_ts}` is persisted to `jobs.json` (thread_ts is the
+conversation KEY, possibly a DM channel id; `started_ts` is the epoch-seconds
+spawn time the timeout window runs from, stamped inside `store.add_job`), and a
+daemon watcher thread is armed. If persisting/arming fails AFTER the spawn, the
+process GROUP is SIGKILLed and reaped (the job is a session/group leader, so a
+child it already forked dies too) and no untracked orphan runs while the user
+is told the job failed to start. An interrupted (`!stop`) run never spawns its job
+(the worker gates the spawn on the cancel token).
+
+**Concurrency limit (`JOB_MAX_CONCURRENT`).** The limit is GLOBAL across all
+agents (it protects the machine): `_start_job` reads the env var LIVE per spawn
+(default `_JOB_MAX_CONCURRENT_DEFAULT` = 4; `0` disables) and counts ALL
+persisted `jobs.json` entries, running or awaiting delivery; an entry parked by
+`_reattach_jobs` for a not-live agent holds a slot until that agent returns or
+the operator hand-edits the store. At the limit the spawn is DECLINED, never
+queued: no process left running, no entry, no watcher, and a "job not started:
+N jobs already running (limit N); use `!job list` / `!job kill <id>`" note
+posted into the reply thread (via the usual `_reply_thread_ts` translation; the
+agent's reply itself still posts normally with the marker stripped). Race-free
+by construction: the count-check and the append are ONE critical section inside
+`store.add_job` (the shared store lock), so two simultaneous spawns serialize
+there and can never both squeeze past the limit. Ordering wrinkle: the pid only
+exists after Popen, so the process is spawned FIRST and on a decline the fresh
+process GROUP is SIGKILLed and reaped (never a bare `proc.kill()`, which would
+orphan a child the group leader already forked); this was chosen over reserving
+a placeholder-pid entry
+before the spawn because it is simpler and equally race-free (the persisted
+entry count never exceeds the limit, and no pid-less reservation entry can ever
+reach `!job list` or `_reattach_jobs`).
+
+**Watcher + completion (`_watch_job` / `_finish_job`).** A watcher for a job
+spawned this process lifetime just `proc.wait()`s (real exit code); a
+RE-ATTACHED watcher polls the persisted pid with `os.kill(pid, 0)` every 5s
+until gone (exit code unknown; the probe accepts the pid-reuse race, see the
+`ponytail:` note in `_pid_alive`; a malformed pid reads as dead so the entry
+still clears).
+
+**Timeout (`AGENT_TIMEOUT_MIN`).** Both watcher paths enforce a max job lifetime
+from the SAME `AGENT_TIMEOUT_MIN` knob that bounds a runner's subprocess (name
+and default single-sourced in `common.agent_timeout_min`: minutes, default 2880,
+`0` disables). The LIVE env
+value is captured when the watcher (re)starts and is the enforced window for
+that watcher's whole lifetime, so a SIGHUP `.env` reload applies to jobs
+spawned or re-attached after it. The window runs from the entry's `started_ts`:
+the this-lifetime path swaps the unbounded `proc.wait()` for a bounded
+`proc.wait(timeout=remaining)`, and the re-attach poll checks the deadline each
+pass, so a RE-ATTACHED watcher enforces only the REMAINING window (not a fresh
+full one) and an already-expired re-attached job is killed on the FIRST poll.
+An entry persisted before `started_ts` existed is treated as started now (never
+retro-killed on sight). On expiry the watcher SIGTERMs the job's process group,
+waits `_JOB_KILL_GRACE_S` (5s), SIGKILLs the group if still alive, then
+delivers through the NORMAL completion flow below with a "timed out after N
+min" label in the completion prompt/note (log tail still included).
+
+On completion `_finish_job` reads the log TAIL
+(`_JOB_LOG_TAIL_CHARS` = 4000 chars, seek-based, the ONE place that number
+lives) and delivers the result mirroring a cron fire: it claims the thread's
+busy slot via `try_register`, posts a placeholder, and synthesizes a follow-up
+agent turn through the SAME `_run_and_update` seam with the prompt
+`[background job finished, exit code N] output tail:\n...`, so the thread's
+existing session resumes and the agent summarizes in context. A thread that is
+BUSY at completion time is NOT skipped silently: the raw completion note (exit
+code + tail) is posted as a plain message instead. Every post translates the
+conversation key via `_reply_thread_ts` (a flat-DM key posts flat). The
+`jobs.json` entry is removed only AFTER delivery lands (note posted, or
+placeholder posted); a failed delivery keeps the entry so the next restart
+re-attaches and re-delivers, and a crash between the post and the remove means
+a rare double-delivery rather than a silently lost result. Security note: the
+log tail is fed back as an agent-turn prompt, so external job output reaches a
+fully unsandboxed agent turn automatically; consistent with the documented
+posture above, but worth stating.
+
+**Restart re-attach (`_reattach_jobs`).** `main()` calls it once after the live
+handler set is built: for each persisted entry, an agent gone from the registry
+drops the entry (warning); an agent in the registry but not LIVE (no Slack
+connection to deliver through) leaves the entry for a later restart; otherwise
+a re-attach watcher is spawned (`_watch_job` with no proc: the pid poll, so an
+already-dead job runs the completion flow immediately, exit code unknown).
+Crash-safe: a broken store or one bad entry never blocks startup.
+
+**Control phrases (`!job list` / `!job kill <id>`).** `jobs._handle_job_command`
+(dispatched by `_handle_control_phrase`, agent-scoped) lists the agent's jobs
+or SIGTERMs a job's process group; the kill does NOT remove the `jobs.json`
+entry, so it settles through the watcher's normal completion path above (the
+terminated job's exit + log tail are delivered like any other completion). See
+[Control phrases](#control-phrases-one-dispatcher).
+
 ## Cron (Slack-native, in-process)
 
 A daemon thread (`_scheduler_loop`, started from `main()`) evaluates each minute
@@ -484,8 +633,13 @@ A backend run can take seconds to minutes, so we never block the Slack ack:
 the handler acks fast, posts a placeholder in the thread (a random line from
 `quotes.json`, else "<agent> is thinking..."), runs the agent's backend in a
 background `threading.Thread` (subprocess with a configurable timeout in
-MINUTES, default 2880 (2 days) via `CLAUDE_TIMEOUT_MIN` / `CODEX_TIMEOUT_MIN`,
-converted to seconds; a malformed value logs a warning and falls back to the
+MINUTES, default 2880 (2 days) via `AGENT_TIMEOUT_MIN`, the ONE timeout knob
+shared with the background-job watcher (name and default single-sourced in
+`common.agent_timeout_min`); read ONCE at import by each runner (a change needs
+a restart; the job watcher reads it live instead), converted to seconds, and `0`
+disables the timeout (None is passed to the subprocess wait, on both the
+non-stream `subprocess.run` and the streaming `proc.wait`); a malformed value
+logs a warning and falls back to the
 default instead of killing the process at import, see `_int_env`; on the
 streaming path this bounds the post-stream
 `proc.wait`, not the whole read), then `chat_update`s the placeholder with the
