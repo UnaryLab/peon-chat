@@ -360,6 +360,12 @@ def _run_claude_streaming(agent, argv, timeout, overrides, on_update, cancel=Non
         return "".join(accumulated), _meta_from_payload({}, agent, overrides)
 
     accumulated = []
+    # Set when a content block closes; the next text delta then opens a NEW text
+    # block (possibly in a new assistant message after tool/subagent activity),
+    # so a paragraph break is inserted first. Without it two prose chunks glue
+    # ("...blocking on it.The subagent..."). Deltas WITHIN one block never see a
+    # stop in between, so continuous text stays byte-exact.
+    pending_block_sep = False
     result_payload = None
     try:
         # Readline-loop over stdout. The CLI emits one JSON object per line.
@@ -379,15 +385,20 @@ def _run_claude_streaming(agent, argv, timeout, overrides, on_update, cancel=Non
                     continue
                 chunk = _text_delta_from_stream_event(event)
                 if chunk:
+                    if pending_block_sep and accumulated:
+                        accumulated.append("\n\n")
+                    pending_block_sep = False
                     accumulated.append(chunk)
                     safe_on_update(on_update, "".join(accumulated))
-                elif _is_block_stop(event) and accumulated:
-                    # A content block just ended: force-flush the full accumulated text
-                    # past the updater's 1/sec throttle so a completed text block (the
-                    # agent's initial preamble, before a long tool/subagent call that
-                    # emits no more text deltas) shows in FULL, not the mid-sentence
-                    # fragment the throttle last posted.
-                    safe_on_update(on_update, "".join(accumulated), force=True)
+                elif _is_block_stop(event):
+                    pending_block_sep = True
+                    if accumulated:
+                        # A content block just ended: force-flush the full accumulated
+                        # text past the updater's 1/sec throttle so a completed text
+                        # block (the agent's initial preamble, before a long
+                        # tool/subagent call that emits no more text deltas) shows in
+                        # FULL, not the mid-sentence fragment the throttle last posted.
+                        safe_on_update(on_update, "".join(accumulated), force=True)
         except (ValueError, OSError):
             # A !stop closed proc.stdout to unblock a reader wedged by an orphaned
             # write fd (see Interrupt._deliver): settle gracefully exactly like the

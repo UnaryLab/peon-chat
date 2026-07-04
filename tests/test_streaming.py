@@ -251,6 +251,176 @@ def test_run_claude_stream_disabled_keeps_legacy_argv_and_single_path(monkeypatc
     ]
 
 
+def _stream_ev(inner, session_id=SID):
+    """One claude stream_event JSONL line wrapping the given inner API event."""
+    return json.dumps(
+        {"type": "stream_event", "session_id": session_id, "event": inner}
+    )
+
+
+def test_run_claude_streaming_separates_assistant_messages(monkeypatch):
+    # REGRESSION (production glue bug): a turn with TWO assistant text messages
+    # separated by tool_use/subagent activity assembled as "...it.The subagent..."
+    # with no separator. The buffer (which feeds every on_update partial, the
+    # !stop settle, and the no-result salvage that is this test's return path)
+    # must join the prose chunks with a paragraph break.
+    monkeypatch.setenv("STREAM_OUTPUT", "1")
+    lines = [
+        json.dumps({"type": "system", "subtype": "init", "session_id": SID}),
+        # assistant message 1: one text block
+        _stream_ev({"type": "message_start", "message": {"role": "assistant"}}),
+        _stream_ev(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text"},
+            }
+        ),
+        _stream_ev(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "text_delta",
+                    "text": "Dispatching a focused pass and blocking on it.",
+                },
+            }
+        ),
+        _stream_ev({"type": "content_block_stop", "index": 0}),
+        _stream_ev({"type": "message_stop"}),
+        # assistant message 2: tool_use only (the subagent dispatch), no text
+        _stream_ev({"type": "message_start", "message": {"role": "assistant"}}),
+        _stream_ev(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "tool_use", "name": "Task"},
+            }
+        ),
+        _stream_ev({"type": "content_block_stop", "index": 0}),
+        _stream_ev({"type": "message_stop"}),
+        # assistant message 3: the follow-up prose
+        _stream_ev({"type": "message_start", "message": {"role": "assistant"}}),
+        _stream_ev(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text"},
+            }
+        ),
+        _stream_ev(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "text_delta",
+                    "text": "The subagent resumed in the background.",
+                },
+            }
+        ),
+        _stream_ev({"type": "content_block_stop", "index": 0}),
+        _stream_ev({"type": "message_stop"}),
+        # no terminal result event: run_claude salvages the assembled buffer
+    ]
+    updates = []
+    with mock.patch(
+        "src.runners.claude_runner.subprocess.Popen",
+        side_effect=_fake_popen_factory(lines),
+    ):
+        reply, _meta = claude_runner.run_claude(
+            BRUNEL, PROMPT, SID, True, on_update=updates.append
+        )
+    expected = (
+        "Dispatching a focused pass and blocking on it."
+        "\n\nThe subagent resumed in the background."
+    )
+    assert reply == expected
+    assert updates[-1] == expected
+
+
+def test_run_claude_streaming_no_separator_within_one_block(monkeypatch):
+    # Deltas of ONE continuous text block stay glued exactly as emitted, even
+    # with the trailing content_block_stop force-flush: no spurious separators.
+    monkeypatch.setenv("STREAM_OUTPUT", "1")
+    lines = [
+        _stream_ev(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text"},
+            }
+        ),
+    ]
+    for chunk in ["Hello", ", ", "world"]:
+        lines.append(
+            _stream_ev(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": chunk},
+                }
+            )
+        )
+    lines.append(_stream_ev({"type": "content_block_stop", "index": 0}))
+    updates = []
+    with mock.patch(
+        "src.runners.claude_runner.subprocess.Popen",
+        side_effect=_fake_popen_factory(lines),
+    ):
+        reply, _meta = claude_runner.run_claude(
+            BRUNEL, PROMPT, SID, True, on_update=updates.append
+        )
+    assert reply == "Hello, world"
+    assert all("\n\n" not in u for u in updates)
+
+
+def test_run_claude_streaming_separates_sibling_text_blocks(monkeypatch):
+    # Two text blocks WITHIN one assistant message (content_block_start index 1
+    # after index 0; the stream grammar allows multiple content blocks per
+    # message) get the same paragraph break.
+    monkeypatch.setenv("STREAM_OUTPUT", "1")
+    lines = [
+        _stream_ev({"type": "message_start", "message": {"role": "assistant"}}),
+        _stream_ev(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text"},
+            }
+        ),
+        _stream_ev(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "First."},
+            }
+        ),
+        _stream_ev({"type": "content_block_stop", "index": 0}),
+        _stream_ev(
+            {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {"type": "text"},
+            }
+        ),
+        _stream_ev(
+            {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "text_delta", "text": "Second."},
+            }
+        ),
+        _stream_ev({"type": "content_block_stop", "index": 1}),
+        _stream_ev({"type": "message_stop"}),
+    ]
+    with mock.patch(
+        "src.runners.claude_runner.subprocess.Popen",
+        side_effect=_fake_popen_factory(lines),
+    ):
+        reply, _meta = claude_runner.run_claude(BRUNEL, PROMPT, SID, True)
+    assert reply == "First.\n\nSecond."
+
+
 def test_run_codex_streaming_partial_and_final(monkeypatch):
     # STREAM_OUTPUT on: run_codex reads codex JSONL incrementally, calls on_update
     # with the agent-message text as it grows, but the FINAL reply still comes from
