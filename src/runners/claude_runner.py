@@ -66,6 +66,7 @@ from src.store.overrides import (  # noqa: F401
     set_override,
 )
 from src.store.sessions import (  # noqa: F401
+    clear_session,
     get_or_create_session,
     get_session,
     set_session,

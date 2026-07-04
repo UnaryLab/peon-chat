@@ -223,6 +223,34 @@ def test_control_ack_in_flat_dm_posts_flat(monkeypatch, tmp_path):
     assert say.posts[0]["thread_ts"] is None
 
 
+def test_new_in_flat_dm_clears_channel_key_and_posts_flat(monkeypatch, tmp_path):
+    # !new in a flat DM: the conversation key is the DM channel id, so the
+    # session stored under (agent, channel_id) is cleared (cutting the rolling
+    # DM context) and the ack posts FLAT like every other control ack.
+    if not _HAVE_APP:
+        return
+    sessions = str(tmp_path / "sessions.json")
+    monkeypatch.setattr(claude_runner, "_sessions_path", lambda: sessions)
+    claude_runner.set_session(
+        _HANDLE_AGENT["name"], _DM_CHANNEL, "sid-dm", path=sessions
+    )
+    event = {
+        "channel": _DM_CHANNEL,
+        "channel_type": "im",
+        "ts": "4.0002",
+        "text": "!new",
+        "client_msg_id": f"MSG-{uuid.uuid4()}",
+    }
+    say, _client = _handle_event(monkeypatch, event)
+    assert (
+        claude_runner.get_session(_HANDLE_AGENT["name"], _DM_CHANNEL, path=sessions)
+        is None
+    )
+    assert len(say.posts) == 1
+    assert "fresh context" in say.posts[0]["text"]
+    assert say.posts[0]["thread_ts"] is None
+
+
 # --- 3. the session is keyed by (agent, channel id) and resumes ---------------
 
 

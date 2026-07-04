@@ -83,6 +83,16 @@ def unregister(agent_name, thread_ts, token):
             del _RUNNING[(agent_name, thread_ts)]
 
 
+def is_running(agent_name, thread_ts):
+    """Read-only peek: is a run in flight for this (agent, thread)?
+
+    Never claims the slot (unlike try_register); used by `!new` to decline while
+    a run is in flight.
+    """
+    with _LOCK:
+        return (agent_name, thread_ts) in _RUNNING
+
+
 def request(agent_name, thread_ts):
     """Signal the in-flight run for this thread. Return True if one was running."""
     with _LOCK:

@@ -58,10 +58,19 @@ def build_manifest(agent):
             "name": display_name,
         },
         "features": {
+            # messages_tab_enabled is REQUIRED for the DM flow: Slack's App Home
+            # Messages Tab defaults to OFF, and with it off the DM composer shows
+            # "Sending messages to this app has been turned off" and no
+            # message.im event is ever produced. read_only must stay False or
+            # the tab shows but still refuses input.
+            "app_home": {
+                "messages_tab_enabled": True,
+                "messages_tab_read_only_enabled": False,
+            },
             "bot_user": {
                 "display_name": display_name,
                 "always_online": True,
-            }
+            },
         },
         "oauth_config": {
             "scopes": {

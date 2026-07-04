@@ -409,6 +409,80 @@ def test_control_phrase_reset_clears_override(monkeypatch, tmp_path):
     assert len(say.posts) == 1
 
 
+def test_control_phrase_new_clears_session(monkeypatch, tmp_path):
+    # !new drops the stored session for (agent, thread) so the next message
+    # starts fresh; it is a handled control phrase (the agent must not run).
+    from src import app as appmod
+
+    sessions = str(tmp_path / "sessions.json")
+    monkeypatch.setattr(claude_runner, "_sessions_path", lambda: sessions)
+    claude_runner.set_session("aristotle", "T1", "sid-old", path=sessions)
+    say = _FakeSay()
+
+    handled = appmod._handle_control_phrase(_CONTROL_AGENT, "!new", "T1", say)
+    assert handled is True
+    assert claude_runner.get_session("aristotle", "T1", path=sessions) is None
+    assert len(say.posts) == 1
+    assert "fresh context" in say.posts[0]["text"]
+
+
+def test_control_phrase_new_keeps_overrides(monkeypatch, tmp_path):
+    # !new touches ONLY the session store: a model override set earlier survives.
+    from src import app as appmod
+
+    sessions = str(tmp_path / "sessions.json")
+    overrides = str(tmp_path / "overrides.json")
+    monkeypatch.setattr(claude_runner, "_sessions_path", lambda: sessions)
+    monkeypatch.setattr(claude_runner, "_overrides_path", lambda: overrides)
+    claude_runner.set_session("aristotle", "T1", "sid-old", path=sessions)
+    claude_runner.set_override("aristotle", "T1", "model", "m-x", path=overrides)
+    say = _FakeSay()
+
+    handled = appmod._handle_control_phrase(_CONTROL_AGENT, "!new", "T1", say)
+    assert handled is True
+    assert claude_runner.get_session("aristotle", "T1", path=sessions) is None
+    assert claude_runner.get_override("aristotle", "T1", path=overrides) == {
+        "model": "m-x"
+    }
+
+
+def test_control_phrase_new_busy_declines(monkeypatch, tmp_path):
+    # A run in flight for this (agent, thread): !new must NOT clear (the worker's
+    # set_session at run end would resurrect the cleared id) and acks busy.
+    from src import app as appmod
+    from src.slack import interrupt
+
+    sessions = str(tmp_path / "sessions.json")
+    monkeypatch.setattr(claude_runner, "_sessions_path", lambda: sessions)
+    claude_runner.set_session("aristotle", "T1", "sid-live", path=sessions)
+    token = interrupt.register("aristotle", "T1")
+    say = _FakeSay()
+    try:
+        handled = appmod._handle_control_phrase(_CONTROL_AGENT, "!new", "T1", say)
+        assert handled is True
+        # Session NOT cleared.
+        assert claude_runner.get_session("aristotle", "T1", path=sessions) == "sid-live"
+        assert len(say.posts) == 1
+        assert "!stop" in say.posts[0]["text"]
+    finally:
+        interrupt.unregister("aristotle", "T1", token)
+
+
+def test_control_phrase_new_without_session_is_noop_ack(monkeypatch, tmp_path):
+    # No stored session: !new must not raise, just ack (a no-op clear).
+    from src import app as appmod
+
+    sessions = str(tmp_path / "sessions.json")
+    monkeypatch.setattr(claude_runner, "_sessions_path", lambda: sessions)
+    say = _FakeSay()
+
+    handled = appmod._handle_control_phrase(_CONTROL_AGENT, "!new", "T1", say)
+    assert handled is True
+    assert claude_runner.get_session("aristotle", "T1", path=sessions) is None
+    assert len(say.posts) == 1
+    assert "fresh context" in say.posts[0]["text"]
+
+
 def test_control_phrase_unknown_help(monkeypatch, tmp_path):
     from src import app as appmod
 

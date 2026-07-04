@@ -23,7 +23,7 @@ peon/                          project root
     store/                     vendor-NEUTRAL persistence package (no slack_bolt, no runner deps)
       __init__.py              public store surface used by app + both runners
       base.py                  single source of truth: shared lock (_SESSIONS_LOCK), path resolution (_sessions_path/_sibling_store_path), dict load/save, _resolve_path seam
-      sessions.py              sessions.json: (agent, thread) -> session_id (get/set/get_or_create)
+      sessions.py              sessions.json: (agent, thread) -> session_id (get/set/clear/get_or_create)
       overrides.py             overrides.json: (agent, thread) -> {model?, effort?}
       crons.py                 crons.json: list of cron entries (add/list/remove/set_enabled)
       workdir.py               get_workdir: per-thread workdir path scheme (the run's cwd)
@@ -38,7 +38,7 @@ peon/                          project root
       __init__.py              package note; app.py facade re-exports from here
       app.py                   Bolt + Socket Mode build/reconcile/main + signal handling (one App per agent, one process)
       handlers.py              mention/message dispatch: _handle, _run_and_update, the streaming updater
-      control.py               !model/!effort/!reset/!cron + !stop interrupt dispatcher (CONTROL_RE)
+      control.py               !model/!effort/!reset/!new/!cron + !stop interrupt dispatcher (CONTROL_RE)
       interrupt.py             !stop run-interrupt registry + phrase matcher (per-thread Interrupt tokens)
       scheduler.py             in-process cron loop (_scheduler_tick) + cron_matches
       files.py                 attachment download (inbound) / upload (outbound)
@@ -304,7 +304,9 @@ stores share `_load_dict_store`/`_save_dict_store`; the list-shaped cron store h
 its own load/save. All three write atomically (temp file + `os.replace`, see
 above):
 
-- **`sessions.json`** (dict): `(agent, thread) -> session_id`, above.
+- **`sessions.json`** (dict): `(agent, thread) -> session_id`, above. The `!new`
+  control phrase clears one key (`clear_session`), so the next message in that
+  conversation starts a fresh CLI context.
 - **`overrides.json`** (dict): `(agent, thread) -> {model?, effort?}`. Set by the
   `!model`/`!effort`/`!reset` control phrases.
 - **`crons.json`** (list): `{id, schedule, agent, channel, thread_ts, prompt,
@@ -354,13 +356,17 @@ character instead of raising through as an unexpected error.
 ## Control phrases (one dispatcher)
 
 `app._handle_control_phrase` is the single parser/dispatcher: it matches
-`CONTROL_RE` (`^!(model|effort|reset|cron)\b ...`, compiled with DOTALL so a
+`CONTROL_RE` (`^!(model|effort|reset|new|cron)\b ...`, compiled with DOTALL so a
 multi-line phrase -- e.g. a `!cron add` whose prompt spans lines -- still
 matches instead of falling through to the help ack) on the de-mentioned
 prompt and routes to the right handler. A handled phrase acks into the thread and
 does NOT run the agent (the agent runs only for a non-`!` message). `!model
-<id>` / `!effort <level>` / `!reset` mutate `overrides.json`; `!cron
-add|list|remove|on|off` mutates `crons.json`. Ahead of the `!`-gate the dispatcher
+<id>` / `!effort <level>` / `!reset` mutate `overrides.json`; `!new` clears the
+conversation's `sessions.json` key (`clear_session`) so the next message starts a
+fresh CLI context (overrides/crons/workdir untouched; declined with a busy ack
+while a run is in flight for the key, since the worker's end-of-run `set_session`
+would resurrect the cleared id -- checked read-only via `interrupt.is_running`);
+`!cron add|list|remove|on|off` mutates `crons.json`. Ahead of the `!`-gate the dispatcher
 also matches the interrupt phrases (`!stop` / bare `stop` / `ctrl-c` / `^c` /
 `interrupt`) and signals the thread's in-flight run (see
 [Run interrupt](#run-interrupt-stop)).

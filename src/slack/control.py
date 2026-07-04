@@ -22,7 +22,7 @@ from . import interrupt, scheduler
 # lines) still matches; without it the arg's `.*` stops at the first newline and
 # the whole phrase falls through to the help ack.
 CONTROL_RE = re.compile(
-    r"^!(model|effort|reset|cron)\b\s*(.*)$", re.IGNORECASE | re.DOTALL
+    r"^!(model|effort|reset|new|cron)\b\s*(.*)$", re.IGNORECASE | re.DOTALL
 )
 
 # The reasoning-effort levels accepted by !effort. Anything else is rejected.
@@ -70,6 +70,9 @@ def _handle_control_phrase(agent, text, thread_ts, say, channel_id=None):
                              (add "<expr>" <prompt> | list | remove <id> |
                              on <id> | off <id>); see _handle_cron_command
       !reset              -> clear this thread's overrides (back to defaults)
+      !new                -> drop this conversation's stored CLI session so the
+                             NEXT message starts a fresh context (overrides,
+                             crons, and the workdir are kept)
     Any other "!..." -> a one-line help ack. A non-"!" message returns False so
     the caller runs the agent normally. On every handled case this acks into the
     thread and the agent is NOT run. `channel_id` identifies the thread's channel
@@ -112,6 +115,30 @@ def _handle_control_phrase(agent, text, thread_ts, say, channel_id=None):
         )
         return True
 
+    if command == "new":
+        # Takes no arguments; any trailing text is ignored (like !reset).
+        # Busy guard FIRST, read-only (never claims the slot): the in-flight
+        # worker calls set_session when it finishes, which would silently
+        # resurrect the just-cleared id, so decline instead of clearing.
+        if interrupt.is_running(agent["name"], thread_ts):
+            say(
+                text=(
+                    "A run is still in progress in this conversation; wait for "
+                    "it or send `!stop`, then `!new`."
+                ),
+                thread_ts=thread_ts,
+            )
+            return True
+        store.clear_session(agent["name"], thread_ts)
+        say(
+            text=(
+                "Started a new conversation: the next message begins with "
+                "fresh context (model/effort overrides kept)."
+            ),
+            thread_ts=thread_ts,
+        )
+        return True
+
     if command == "model":
         if not arg:
             say(text="Usage: !model <model-id>", thread_ts=thread_ts)
@@ -142,7 +169,7 @@ def _ack_control_help(agent, thread_ts, say):
     say(
         text=(
             f"Commands: `!model <id>`, `!effort <{'|'.join(VALID_EFFORTS)}>`, "
-            f"`!cron <add|list|remove|on|off>`, `!stop`, `!reset`"
+            f"`!cron <add|list|remove|on|off>`, `!stop`, `!reset`, `!new`"
         ),
         thread_ts=thread_ts,
     )

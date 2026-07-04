@@ -64,6 +64,25 @@ def get_session(agent_name, thread_ts, path=None):
         return _load_dict_store(path).get(key)
 
 
+def clear_session(agent_name, thread_ts, path=None):
+    """Drop the stored session id for (agent_name, thread_ts), if any.
+
+    Backs the `!new` control phrase: with the key gone, the NEXT message in this
+    conversation starts a fresh CLI context (get_session returns None, so the
+    runner begins a new session). A no-op when no session is stored. Overrides,
+    crons, and the workdir are untouched.
+    """
+    if path is None:
+        path = _resolve_path("_sessions_path", _sessions_path)
+    key = _session_key(agent_name, thread_ts)
+    with _SESSIONS_LOCK:
+        sessions = _load_dict_store(path)
+        if key not in sessions:
+            return
+        del sessions[key]
+        _save_dict_store(sessions, path)
+
+
 def set_session(agent_name, thread_ts, session_id, path=None):
     """Persist `session_id` for (agent_name, thread_ts) (read-modify-write)."""
     if path is None:

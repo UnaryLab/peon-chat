@@ -122,7 +122,10 @@ Each agent is its own Slack bot that you address by name.
    top-level DM message continues the same context, across messages and
    restarts, and replies post directly in the DM (not in a thread). Starting a
    thread on a DM message opens a separate conversation, exactly like a thread
-   anywhere else.
+   anywhere else. If Slack shows "Sending messages to this app has been turned
+   off", the app's Messages Tab is disabled: update the app from a regenerated
+   manifest (which now enables it), or toggle it by hand under App Home > Show
+   Tabs > Messages Tab (check "Allow users to send ... messages").
 4. **Ask without typing a question.** If you @-mention an agent with no actual
    question, it replies asking what you would like to ask.
 5. **Talk to several agents.** Mention different agents (Aristotle, Brunel,
@@ -159,6 +162,7 @@ Shift+Enter):
 | `!model <model-id>` | Override the model for this thread. |
 | `!effort <low\|medium\|high\|xhigh\|max>` | Override the reasoning effort. |
 | `!reset` | Clear this thread's overrides (back to defaults). |
+| `!new` | Start a new conversation: drop this conversation's stored CLI session so the NEXT message begins with fresh context (overrides kept). Works in any thread; especially useful in a 1:1 DM to cut the ever-growing rolling DM context. Declined while a run is in flight (`!stop` it first). |
 | `!stop` (or `stop`, `interrupt`, `ctrl-c`) | Interrupt the run in flight in this thread (the Ctrl-C analog): SIGINTs the streaming CLI and settles with the partial reply, marked `_(interrupted)_`. The thread stays resumable. Streaming only; a no-op under `STREAM_OUTPUT=0`. |
 | `!cron add "<min hour dom month dow>" <prompt>` | Schedule a recurring run of `<prompt>` in this thread. |
 | `!cron list` | List scheduled crons. |

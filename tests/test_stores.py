@@ -508,6 +508,12 @@ def test_build_manifest_name_fields_scopes_events_and_socket():
     assert m["display_information"]["name"] == "Aristotle"
     assert m["features"]["bot_user"]["display_name"] == "Aristotle"
     assert m["features"]["bot_user"]["always_online"] is True
+    # The DM flow needs the App Home Messages Tab ON and writable; without it
+    # Slack blocks composing DMs to the app entirely.
+    assert m["features"]["app_home"] == {
+        "messages_tab_enabled": True,
+        "messages_tab_read_only_enabled": False,
+    }
     assert m["oauth_config"]["scopes"]["bot"] == [
         "app_mentions:read",
         "chat:write",
