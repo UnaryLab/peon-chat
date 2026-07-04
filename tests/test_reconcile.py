@@ -420,7 +420,7 @@ def test_control_phrase_unknown_help(monkeypatch, tmp_path):
     assert handled is True  # matched `!`, handled as help (agent must not run)
     assert claude_runner.get_override("aristotle", "T1", path=store) is None
     assert len(say.posts) == 1
-    # The help line lists the three commands.
+    # The help line names the commands (spot-check three of the five).
     text = say.posts[0]["text"]
     assert "!model" in text and "!effort" in text and "!reset" in text
 

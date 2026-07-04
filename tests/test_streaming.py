@@ -26,7 +26,8 @@ from tests.helpers import (
 
 # ---------------------------------------------------------------------------
 # Streaming output (both backends). Default ON (STREAM_OUTPUT unset/truthy); the
-# tests above pin STREAM_OUTPUT="0" via conftest, so these re-enable it. Claude
+# suite pins STREAM_OUTPUT="0" via conftest's autouse fixture, so these re-enable
+# it. Claude
 # switches argv to --output-format stream-json --include-partial-messages
 # --verbose and reads JSONL deltas; codex keeps its argv (already --json) but
 # consumes stdout incrementally while still reading the -o file for the final

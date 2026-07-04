@@ -14,10 +14,10 @@ are skipped with a warning, the rest still come up.
 Per-agent tokens are sourced from env vars suffixed by the agent's uppercased
 name (see agents.token_env_names): Brunel -> SLACK_BOT_TOKEN_BRUNEL / SLACK_APP_TOKEN_BRUNEL.
 
-This is the ONLY module that imports slack_bolt, so agents.py and
-claude_runner.py stay importable/testable without Slack installed. Importing
-this module has NO side effects and needs NO tokens or network: all App
-construction happens inside main().
+slack_bolt is imported only by the Slack layer (this package and the src/app.py
+facade), so the registry, runners, and stores stay importable/testable without
+Slack installed. Importing this module has NO side effects and needs NO tokens
+or network: all App construction happens inside main().
 
 Run always-on (loads .env if present):
     conda run -n peon python -m src
@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import threading
@@ -47,6 +48,12 @@ logger = logging.getLogger("peon")
 # Set by the SIGHUP handler, consumed by the main reload loop. Module-level so the
 # (minimal) signal handler can flip it without touching any heavy state.
 _reload_requested = threading.Event()
+
+# A message whose text OPENS with a user mention (after optional whitespace).
+# on_message uses it to skip an in-thread follow-up directed at someone else
+# ("@B what do you think?" in a thread this agent also has a session in): the
+# recipient's own app_mention handles it. Mid-text mentions do not match.
+_LEADING_MENTION_RE = re.compile(r"^\s*<@([A-Z0-9]+)>")
 
 
 def _request_reload(signum, frame):  # noqa: ARG001 - signal handler signature
@@ -80,7 +87,10 @@ def build_app_for(agent, bot_token):
                 cache["id"] = app.client.auth_test()["user_id"]
             except Exception:  # noqa: BLE001 - never let a lookup crash a handler
                 logger.warning("could not resolve bot user id for %s", agent["name"])
-                cache["id"] = None
+                # Do NOT cache the failure: a transient auth_test error would
+                # otherwise disable the mention-ownership check for the app's
+                # whole lifetime. The next event retries the lookup.
+                return None
         return cache["id"]
 
     @app.event("app_mention")
@@ -89,6 +99,17 @@ def build_app_for(agent, bot_token):
 
     @app.event("message")
     def on_message(event, client, say):
+        # 1:1 DMs first: Slack does NOT dispatch app_mention in an "im"
+        # channel, so message.im is the ONLY delivery path for a DM and every
+        # gate below (the thread_ts gate, the mention-ownership checks, the
+        # session check) would drop it. Route every im message straight to
+        # _handle, which already does the subtype/bot_id filtering and dedup
+        # (the dedup is the backstop if Slack were ever to also send an
+        # app_mention here). mpim (group DM) DOES get app_mention, so it stays
+        # on the normal path below. channel_type is present on message events.
+        if event.get("channel_type") == "im":
+            handlers._handle(agent, event, client, say)
+            return
         # Only continue existing threaded conversations here; plain top-level
         # chatter is owned by app_mention. No thread_ts => nothing to continue.
         if not event.get("thread_ts"):
@@ -96,8 +117,19 @@ def build_app_for(agent, bot_token):
         # A mention-bearing in-thread reply ALSO arrives as app_mention; let
         # app_mention own those so we never double-handle (dedup is the backstop).
         bot_id = bot_user_id()
-        if bot_id and f"<@{bot_id}>" in (event.get("text") or ""):
+        text = event.get("text") or ""
+        if bot_id and f"<@{bot_id}>" in text:
             return
+        # A follow-up that OPENS with someone else's mention is directed at them
+        # ("@B what do you think?"); their own app_mention handles it, so we must
+        # not claim it as our unmentioned follow-up. Mid-text mentions ("ask
+        # <@alice> about X") are still ordinary follow-ups for us. If our own id
+        # could not be resolved (bot_id None), keep the old claim-it behavior
+        # rather than guess.
+        if bot_id:
+            leading = _LEADING_MENTION_RE.match(text)
+            if leading and leading.group(1) != bot_id:
+                return
         if not _has_existing_thread_session(agent, event):
             return
         handlers._handle(agent, event, client, say)

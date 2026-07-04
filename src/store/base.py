@@ -64,10 +64,22 @@ def _load_dict_store(path):
         return {}
 
 
+def _atomic_write_json(data, path):
+    """Write `data` as pretty JSON to `path` atomically (temp file + os.replace).
+
+    A hard kill mid-write must never leave a truncated store behind (the loaders
+    silently treat corrupt JSON as empty, which would wipe every session/cron).
+    Callers already hold _SESSIONS_LOCK, so the fixed .tmp sibling name is safe.
+    """
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+    os.replace(tmp, path)
+
+
 def _save_dict_store(data, path):
     """Persist a dict-shaped JSON store (pretty, deterministic key order)."""
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, sort_keys=True)
+    _atomic_write_json(data, path)
 
 
 def _sibling_store_path(filename):

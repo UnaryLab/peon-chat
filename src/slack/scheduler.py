@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from datetime import datetime
 
@@ -53,7 +54,8 @@ def _cron_field_values(field, low, high):
         if not part:
             raise ValueError("empty cron field part")
         step = 1
-        if "/" in part:
+        has_step = "/" in part
+        if has_step:
             base, step_s = part.split("/", 1)
             step = int(step_s)
             if step <= 0:
@@ -67,6 +69,10 @@ def _cron_field_values(field, low, high):
             start, end = int(start_s), int(end_s)
         else:
             start = end = int(base)
+            if has_step:
+                # Vixie cron: "N/S" means N through the field max, step S
+                # (minute "5/15" -> 5,20,35,50), not the single value N.
+                end = high
         if start < low or end > high or start > end:
             raise ValueError(f"cron field {base!r} out of range [{low},{high}]")
         result.update(range(start, end + 1, step))
@@ -118,7 +124,7 @@ def _handle_cron_command(agent, arg, thread_ts, say, channel_id):
 
     Subcommands (the store is the lock-guarded crons.json):
       add "<5-field expr>" <prompt> -> schedule a recurring run in THIS thread
-      list                          -> list this thread's crons (or all? -> all here)
+      list                          -> list ALL crons (every thread and agent)
       remove <id>                   -> delete a cron by id
       off <id> / on <id>            -> disable / enable a cron by id
     `channel_id` is the channel the new cron should post into (the current one).
@@ -217,9 +223,9 @@ def _handle_cron_command(agent, arg, thread_ts, say, channel_id):
 def _cron_expr_valid(expr):
     """Whether `expr` is a well-formed 5-field cron expression (parses without error).
 
-    Probed by trying cron_matches against a fixed datetime: a malformed expr makes
-    cron_matches return False for ALL times, so we instead validate by parsing each
-    field directly. Returns True iff all 5 fields parse within their ranges.
+    cron_matches cannot serve as the probe (a malformed expr just returns False
+    for every time, indistinguishable from "never fires"), so each field is
+    parsed directly. Returns True iff all 5 fields parse within their ranges.
     """
     fields = (expr or "").split()
     if len(fields) != 5:
@@ -257,12 +263,17 @@ def _fire_cron(entry, live):
         return
     client = handler_entry["handler"].app.client
     channel = entry.get("channel")
+    # The stored thread_ts is the conversation KEY: a real thread ts, or (for a
+    # !cron add issued in a flat 1:1 DM) the DM channel id. The placeholder's
+    # POSTING target goes through the same key translation as live messages
+    # (a flat-DM cron posts flat; Slack rejects a channel id as thread_ts),
+    # while _run_and_update below still receives the raw KEY.
     thread_ts = entry.get("thread_ts")
     prompt = entry.get("prompt") or ""
     try:
         placeholder = client.chat_postMessage(
             channel=channel,
-            thread_ts=thread_ts,
+            thread_ts=_appfacade._reply_thread_ts(thread_ts),
             text=f"{agent['display_name']} (scheduled) is thinking...",
         )
         placeholder_ts = placeholder["ts"]
@@ -290,7 +301,15 @@ def _scheduler_tick(live, now):
             continue
         try:
             if cron_matches(entry.get("schedule", ""), now):
-                _appfacade._fire_cron(entry, live)
+                # Fire on its OWN daemon thread so one long cron run never
+                # blocks this tick (and the loop's next minutes). _fire_cron
+                # itself stays synchronous and directly testable.
+                threading.Thread(
+                    target=_appfacade._fire_cron,
+                    args=(entry, live),
+                    daemon=True,
+                    name=f"cron-fire-{entry.get('id')}",
+                ).start()
                 fired += 1
         except Exception:  # noqa: BLE001 - one bad cron must not abort the tick
             logger.exception("cron %s: fire failed", entry.get("id"))
@@ -331,4 +350,13 @@ def _scheduler_loop(live, now=None, sleep=None, _once=False):
                 logger.exception("scheduler tick failed")
         if _once:
             break
-        sleep(_SCHEDULER_TICK_SECONDS)
+        # Sleep to the NEXT minute boundary, not a fixed 60s: a fixed sleep lets
+        # the wake time drift forward each tick until a minute is skipped
+        # entirely. Computed from `current` (the injected clock's reading for
+        # this iteration; the tick above only spawns threads, so it is fresh).
+        delay = _SCHEDULER_TICK_SECONDS - (
+            current.second + current.microsecond / 1_000_000
+        )
+        if delay <= 0:
+            delay = _SCHEDULER_TICK_SECONDS
+        sleep(delay)

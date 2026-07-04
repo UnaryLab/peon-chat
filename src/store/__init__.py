@@ -1,8 +1,9 @@
 """Vendor-neutral persistence stores (sessions, overrides, crons, workdir).
 
-The public surface used by app.py and the runners. All stores anchor on
-store.base (the shared lock + path resolution), so the JSON files live together
-beside sessions.json and SESSIONS_PATH redirects all of them at once.
+The public surface used by app.py and the runners. The JSON stores (sessions,
+overrides, crons) anchor on store.base (the shared lock + path resolution), so
+their files live together beside sessions.json and SESSIONS_PATH redirects them
+all at once; workdir is a path-only scheme under WORKDIR_BASE (no lock, no JSON).
 """
 
 from __future__ import annotations

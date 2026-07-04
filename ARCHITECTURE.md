@@ -12,10 +12,11 @@ See the [README](README.md) for installation and usage.
 ```
 peon/                          project root
   agents.json                  the agent definitions (SINGLE SOURCE OF TRUTH)
+  quotes.json                  optional placeholder quotes (missing/invalid = default "thinking..." text)
   src/                         the importable package (run as `python -m src`)
     __init__.py
     __main__.py                `python -m src` runs the app; `python -m src manifest <name>` prints a manifest
-    agents.py                  loads + validates agents.json into REGISTRY; token env-var names
+    agents.py                  loads + validates agents.json into REGISTRY (duplicate names are a ValueError); token env-var names
     env.py                     load_env(): loads .env into os.environ with override=True (runs first)
     manifest.py                build_manifest(agent) -> the Slack app manifest dict
     app.py                     FACADE over src/slack/ (re-exports main/reconcile/build_app_for + the test patch surface)
@@ -30,7 +31,7 @@ peon/                          project root
       __init__.py              get_runner(backend) -> the runner facade module (claude or codex); the answer-seam contract
       claude.py                Claude-only runner internals: argv (build_command), run_claude, streaming, answer
       codex.py                 Codex-only runner internals: argv (build_command), run_codex, streaming, answer (NO claude/claude_runner import)
-      common.py                cross-vendor shared: seen_before (dedup) + Interrupt (run cancel token) + _stream_enabled/_cwd_from_overrides (runtime helpers) + safe_on_update/format_process_failure
+      common.py                cross-vendor shared: seen_before (dedup) + Interrupt (run cancel token) + _stream_enabled/_cwd_from_overrides (runtime helpers) + safe_on_update/format_process_failure + drain_stderr (concurrent stderr drain) + _int_env (tolerant int env parse)
       claude_runner.py         FACADE re-exporting src/runners/claude.py + common.{seen_before, Interrupt} + src/store/* (back-compat public seam)
       codex_runner.py          FACADE re-exporting src/runners/codex.py
     slack/                     Slack-facing layer (the only place that imports slack_bolt)
@@ -42,6 +43,7 @@ peon/                          project root
       scheduler.py             in-process cron loop (_scheduler_tick) + cron_matches
       files.py                 attachment download (inbound) / upload (outbound)
       usage.py                 _format_usage / _usage_enabled (SHOW_USAGE footer)
+      quotes.py                random_quote(): placeholder quotes from quotes.json (mtime-cached, graceful)
   tests/
     test_*.py                  themed pytest suites sharing tests/helpers.py. No live Slack/Claude/Codex calls
   requirements.txt
@@ -141,23 +143,25 @@ claude agents pin `"model": "claude-opus-4-8[1m]"`, so `--model claude-opus-4-8[
 appears in every argv; if an entry omitted `model`, code falls back to that same
 pin (and logs a warning). Reasoning effort is the entry's `effort` field (accepted
 values `low`, `medium`, `high`, `xhigh`, `max`), which adds `--effort <level>`
-after `--model`; an absent/empty `effort` means no flag (the CLI default). To
-change either, edit that agent's `agents.json` entry (e.g. `"effort": "high"` or
-`"model": "claude-sonnet-4-6"`); there is no env-var override:
+after `--model`; an absent/empty `effort` means no flag (the CLI default), but
+every shipped entry sets one (Aristotle `xhigh`; Brunel and Cicero `high`), so
+the shipped argv always carries `--effort`. To change either, edit that agent's
+`agents.json` entry (e.g. `"effort": "high"` or `"model": "claude-sonnet-4-6"`);
+there is no env-var override:
 
 ```
 # Aristotle, new thread:
-claude -p --output-format json --session-id <uuid> --agent unarylab-research:research_manager --permission-mode bypassPermissions --model claude-opus-4-8[1m] "<prompt>"
+claude -p --output-format json --session-id <uuid> --agent unarylab-research:research_manager --permission-mode bypassPermissions --model claude-opus-4-8[1m] --effort xhigh "<prompt>"
 # Aristotle, continuing the same thread:
-claude -p --output-format json --resume <uuid> --agent unarylab-research:research_manager --permission-mode bypassPermissions --model claude-opus-4-8[1m] "<prompt>"
+claude -p --output-format json --resume <uuid> --agent unarylab-research:research_manager --permission-mode bypassPermissions --model claude-opus-4-8[1m] --effort xhigh "<prompt>"
 
 # Brunel, new / resume (same shape, different agent):
-claude -p --output-format json --session-id <uuid> --agent unarylab-research:project_manager --permission-mode bypassPermissions --model claude-opus-4-8[1m] "<prompt>"
-claude -p --output-format json --resume     <uuid> --agent unarylab-research:project_manager --permission-mode bypassPermissions --model claude-opus-4-8[1m] "<prompt>"
+claude -p --output-format json --session-id <uuid> --agent unarylab-research:project_manager --permission-mode bypassPermissions --model claude-opus-4-8[1m] --effort high "<prompt>"
+claude -p --output-format json --resume     <uuid> --agent unarylab-research:project_manager --permission-mode bypassPermissions --model claude-opus-4-8[1m] --effort high "<prompt>"
 
 # Cicero (general/default run: NO --agent flag):
-claude -p --output-format json --session-id <uuid> --permission-mode bypassPermissions --model claude-opus-4-8[1m] "<prompt>"
-claude -p --output-format json --resume     <uuid> --permission-mode bypassPermissions --model claude-opus-4-8[1m] "<prompt>"
+claude -p --output-format json --session-id <uuid> --permission-mode bypassPermissions --model claude-opus-4-8[1m] --effort high "<prompt>"
+claude -p --output-format json --resume     <uuid> --permission-mode bypassPermissions --model claude-opus-4-8[1m] --effort high "<prompt>"
 ```
 
 `--output-format json` makes stdout a single JSON object; we read the `result`
@@ -183,18 +187,22 @@ persona), so we always include it to guarantee a resumed thread keeps its brain.
 `build_command` (the logic lives in `src/runners/codex.py`, re-exported by the
 `codex_runner` facade) produces exactly these argv lists (codex-cli 0.141.0, all
 empirically verified). Codex mints its own session id (a `thread_id`), so a fresh
-run captures it from stdout; a resume passes it back:
+run captures it from stdout; a resume passes it back.
+The `--profile`, `-m`, and `-c model_reasoning_effort` flags are conditional on
+the entry's fields; the shipped Dijkstra entry sets all three
+(`codex_profile: project_manager`, `model: gpt-5.5`, `effort: high`):
 
 ```
 # Dijkstra, fresh run (mints a thread_id; reply is written to the -o file):
-codex exec --json --skip-git-repo-check -s danger-full-access -o <last_message_file> "<prompt>"
-# Dijkstra, continuing the same thread (resume by the captured thread_id):
-codex exec resume <thread_id> --json --skip-git-repo-check -c sandbox_mode=danger-full-access -o <last_message_file> "<prompt>"
+codex exec --json --skip-git-repo-check -s danger-full-access --profile project_manager -o <last_message_file> -m gpt-5.5 -c model_reasoning_effort="high" "<prompt>"
+# Dijkstra, continuing the same thread (resume by the captured thread_id; no --profile):
+codex exec resume <thread_id> --json --skip-git-repo-check -c sandbox_mode=danger-full-access -o <last_message_file> -m gpt-5.5 -c model_reasoning_effort="high" "<prompt>"
 ```
 
 Details:
 
-- `--skip-git-repo-check` is **required** (this project is not a git repo).
+- `--skip-git-repo-check` is **required**: the run's cwd (the per-thread
+  workdir under `WORKDIR_BASE`) is not a git repo.
 - The run is fully unsandboxed (see [Per-thread workdir](#per-thread-workdir)).
   On a fresh run that is `-s danger-full-access`; on a `resume` run (which does
   **not** accept `-s/--sandbox`) it is `-c sandbox_mode=danger-full-access` (raw
@@ -215,9 +223,8 @@ Details:
   `minimal`, `low`, `medium`, `high`, `xhigh`, subject to the active Codex
   model). When set, it adds `-c model_reasoning_effort="<level>"` on both the
   fresh and resume runs; absent/empty means no override (the CLI/model default).
-- Both `model` and `effort` come SOLELY from the agent's `agents.json` entry,
-  exactly like the claude backend: there is no env-var override; edit `agents.json`
-  to change them.
+  As with claude, `agents.json` is the sole source of model/effort: no env-var
+  override.
 - Persona via `--profile <name>` (OPTIONAL, codex-only): when the agent's
   `agents.json` entry sets a non-empty `codex_profile` (a profile NAME), the fresh
   run appends `--profile <name>`, so codex layers `~/.codex/<name>.config.toml`
@@ -237,10 +244,14 @@ Details:
 
 ## How independent contexts are guaranteed
 
-Context is keyed on `(agent_name, slack_thread_ts)`:
+Context is keyed on `(agent_name, conversation_key)`, where the key is the
+Slack thread ts, or the DM channel id for a flat 1:1 DM:
 
 - For a top-level mention (not already in a thread), the message's own `ts` is
   used as the thread root.
+- For a top-level message in a 1:1 DM (`im` channel), the DM CHANNEL id is the
+  key: one rolling conversation per DM, not one per message. Threads inside a
+  DM key on their thread ts like any other thread.
 - A persistent JSON map `sessions.json` stores
   `{ "<agent_name>:<thread_ts>": "<uuid session id>" }`.
 - First message for a key -> mint a fresh `uuid4`, store it, run with
@@ -267,12 +278,17 @@ restart.)
 has, `--resume <id>` fails with `No conversation found with session ID: <id>`.
 `claude.answer` detects exactly that error, mints+persists a fresh id (clearing the
 dead one) and retries ONCE as a new session, so a stale id can never wedge a thread
-forever.
+forever. The marker is checked against the FULL raw stderr carried on the error
+object (`err.stderr`), not just the formatted message (which truncates stderr to
+1000 chars), so noisy stderr ahead of the marker cannot defeat the heal.
 
 The session store is a plain JSON file: fine for one process at modest volume.
 The background worker threads share the process, so the read-modify-write is
 guarded by a `threading.Lock`; swap for sqlite if it grows or needs concurrency
-across processes (marked with a `# ponytail:` comment in the code).
+across processes (marked with a `# ponytail:` comment in the code). Every save
+is atomic (write to a `.tmp` sibling, then `os.replace`), so a hard kill
+mid-write can never leave a truncated store behind (the tolerant loaders would
+silently read truncated JSON as empty, wiping every session).
 
 ### Per-thread stores
 
@@ -285,7 +301,8 @@ facade re-exports all of them for back-compat. They all sit beside
 `sessions.json` via `_sibling_store_path(<name>)`, so the single `SESSIONS_PATH`
 env var redirects every store at once (no per-store env var). The dict-shaped
 stores share `_load_dict_store`/`_save_dict_store`; the list-shaped cron store has
-its own load/save:
+its own load/save. All three write atomically (temp file + `os.replace`, see
+above):
 
 - **`sessions.json`** (dict): `(agent, thread) -> session_id`, above.
 - **`overrides.json`** (dict): `(agent, thread) -> {model?, effort?}`. Set by the
@@ -326,10 +343,20 @@ drives live updates. `STREAM_OUTPUT=0` is the legacy single-shot path (one final
 update, claude's exact pre-streaming argv). See the claude/codex argv notes above
 for the argv impact (claude: streaming flags; codex: none).
 
+On the streaming path each runner drains the CLI's PIPE'd stderr on a concurrent
+daemon thread (`drain_stderr` in `src/runners/common.py`): a CLI writing more
+than the OS pipe buffer (~64KB) of stderr would otherwise block on the write and
+stop producing stdout, deadlocking the readline loop. The drained text still
+feeds the error message on a nonzero exit. On both paths CLI output is decoded
+with `errors="replace"`, so a stray non-UTF8 byte degrades to a replacement
+character instead of raising through as an unexpected error.
+
 ## Control phrases (one dispatcher)
 
 `app._handle_control_phrase` is the single parser/dispatcher: it matches
-`CONTROL_RE` (`^!(model|effort|reset|cron)\b ...`) on the de-mentioned
+`CONTROL_RE` (`^!(model|effort|reset|cron)\b ...`, compiled with DOTALL so a
+multi-line phrase -- e.g. a `!cron add` whose prompt spans lines -- still
+matches instead of falling through to the help ack) on the de-mentioned
 prompt and routes to the right handler. A handled phrase acks into the thread and
 does NOT run the agent (the agent runs only for a non-`!` message). `!model
 <id>` / `!effort <level>` / `!reset` mutate `overrides.json`; `!cron
@@ -346,14 +373,29 @@ for that `(agent, thread)` without starting a new one. It is matched in
 `_handle_control_phrase` BEFORE the `!`-gate (the bare forms carry no `!`).
 
 - **`Interrupt` token (`src/runners/common.py`).** A one-shot, thread-safe cancel
-  handle holding the live `Popen`. `.request()` sets a flag and sends **SIGINT** to
-  the process (mimics Ctrl-C, letting the CLI flush its own session state).
+  handle for the live `Popen`, which the runner attaches via `.arm(proc)` right
+  after spawning. `arm()` and `.request()` share one lock, so a `!stop` that lands
+  BEFORE the spawn finishes (flag set, proc still `None`) is delivered the moment
+  the proc is attached, instead of being acked and silently lost. `.request()`
+  sets a flag and sends **SIGINT** to a live process (mimics Ctrl-C, letting the
+  CLI flush its own session state); if the process has ALREADY exited but its
+  stdout is still open (an orphaned descendant inherited the write end, so the
+  reader never sees EOF), it closes the read end instead, unblocking the wedged
+  reader, which then settles as an interrupted partial.
 - **Registry (`src/slack/interrupt.py`).** An in-memory `{(agent, thread):
-  Interrupt}` (single-process, like the dedup). The worker `register`s a token for
-  the duration of the run and always `unregister`s it in a `finally`; `!stop` calls
-  `request(agent, thread)`, which returns whether a run was live.
+  Interrupt}` (single-process, like the dedup). It doubles as the per-thread
+  **busy guard**: `_handle` atomically claims the slot with `try_register`
+  BEFORE spawning the worker, and a second message while a run is in flight
+  gets `None` back and is declined with a short "still working" reply (never
+  two concurrent runs `--resume`-ing one session id). The cron path claims the
+  slot the SAME way (`try_register` inside `_run_and_update`): a fire that lands
+  while a run is in flight is skipped, its placeholder updated to a "skipped: a
+  run is already in progress" note; the unconditional last-writer-wins `register`
+  remains only as the raw primitive. The worker always `unregister`s the token in
+  a `finally`; `!stop` calls `request(agent, thread)`, which returns whether a
+  run was live.
 - **Graceful settle (the runners).** The worker passes the token into
-  `answer(..., cancel=token)`; each runner stores the live `Popen` on it. On the
+  `answer(..., cancel=token)`; each runner arms it with the live `Popen`. On the
   SIGINT-induced nonzero exit, the streaming loop checks `cancel.requested` and
   RETURNS the partial reply instead of raising. So `set_session` still persists the
   session id and **the thread stays resumable**; the worker marks the reply
@@ -395,51 +437,110 @@ reused by both runners and by the outbound file upload.
 ## Files in and out
 
 Inbound: a message's `files[]` are downloaded with the bot token
-(`_http_get_bytes`, stdlib `urllib`, the single mocked HTTP seam) into a
+(`_http_get_bytes`, stdlib `urllib` with a 60s per-download timeout so a stalled
+CDN read cannot wedge the thread's busy slot; the single mocked HTTP seam) into a
 per-thread temp dir, and their local paths are appended to the prompt so the CLI
-can open them. Outbound is opt-in and model-driven: a run delivers files only by
+can open them. A threaded follow-up carrying an upload arrives with the
+`file_share` message subtype, which the handler lets through (every other
+subtype is ignored), so inbound files work on unmentioned follow-ups too.
+Outbound is opt-in and model-driven: a run delivers files only by
 ending its reply with a `<<files: name1, name2>>` marker (which is stripped from
-the posted reply); each named file is resolved inside the thread's workdir (paths
+the posted reply); the marker is recognized ONLY at the very end of the reply --
+a reply that merely mentions the syntax mid-text is plain prose and triggers
+nothing. Each named file is resolved inside the thread's workdir (paths
 escaping it are rejected) and uploaded via `files_upload_v2`. Both need the
 `files:read` / `files:write` bot scopes. No marker (the default), or no workdir
 resolved for the thread, uploads nothing.
 
 ## Cron (Slack-native, in-process)
 
-A daemon thread (`_scheduler_loop`, started from `main()`) ticks every 60s,
-re-reads `crons.json` (so a SIGHUP edit is picked up with no extra wiring), and
+A daemon thread (`_scheduler_loop`, started from `main()`) evaluates each minute
+once, sleeping to the NEXT minute boundary rather than a fixed 60s (a fixed sleep
+would drift forward each tick until a minute was skipped entirely). Each pass
+re-reads `crons.json` (so a SIGHUP edit is picked up with no extra wiring) and
 fires every ENABLED entry whose 5-field expression matches the current minute
 (`cron_matches`, a hand-rolled matcher: `*`, lists, `A-B` ranges, `*/S` and
-`A-B/S` steps; no `croniter`/APScheduler dependency). A fire synthesizes a run
+`A-B/S` steps, plus Vixie `N/S` = N through the field max in steps of S, e.g.
+minute `5/15` -> 5,20,35,50; no `croniter`/APScheduler dependency). Each fire
+runs on its OWN daemon thread (`_scheduler_tick` spawns one per fire), so a long
+cron run never blocks the tick loop's next minutes. A fire synthesizes a run
 through the SAME `_run_and_update` seam as a live mention, posting into the cron's
-target thread. A skip-by-minute guard prevents a double-fire within one minute.
+target thread; it claims the thread's busy slot via `try_register`, so a fire
+that lands while a run is already in flight in that thread is skipped (its
+placeholder is updated to a "skipped: a run is already in progress" note). A
+skip-by-minute guard prevents a double-fire within one minute.
 This is distinct from Claude Code's own `/schedule` (cloud routines); this one
 runs inside this always-on process and posts back into Slack.
 
 ## Async / non-blocking
 
 A backend run can take seconds to minutes, so we never block the Slack ack:
-the handler acks fast, posts a "<agent> is thinking..." placeholder in the thread,
-runs the agent's backend in a background `threading.Thread` (subprocess with a
-configurable timeout in MINUTES, default 2880 (2 days) via `CLAUDE_TIMEOUT_MIN` /
-`CODEX_TIMEOUT_MIN`, converted to seconds for `subprocess.run`), then
-`chat_update`s the placeholder with the result.
+the handler acks fast, posts a placeholder in the thread (a random line from
+`quotes.json`, else "<agent> is thinking..."), runs the agent's backend in a
+background `threading.Thread` (subprocess with a configurable timeout in
+MINUTES, default 2880 (2 days) via `CLAUDE_TIMEOUT_MIN` / `CODEX_TIMEOUT_MIN`,
+converted to seconds; a malformed value logs a warning and falls back to the
+default instead of killing the process at import, see `_int_env`; on the
+streaming path this bounds the post-stream
+`proc.wait`, not the whole read), then `chat_update`s the placeholder with the
+result. A finished reply longer than Slack's 40,000-char `chat_update` limit is
+capped by `_truncate_for_slack` (the first 39,000 chars are kept and a
+truncation note appended); the `<<files:>>` marker is parsed BEFORE the cap (so
+file delivery survives) and the interrupted label / usage footer are appended
+AFTER it (so they survive too). One run per (agent, thread) at a time: `_handle` claims the thread's
+interrupt-registry slot before spawning the worker and declines a concurrent
+message with a short busy note (see [Run interrupt](#run-interrupt-stop)).
 Failures (nonzero exit, timeout, an error result, empty/malformed output) are
 caught (`ClaudeRunError` / `CodexRunError`) and posted as a short error message
-into the thread. One bad run never crashes the process.
+into the thread; if the run had already streamed partial text, that partial
+reply is kept instead, with a note that it was cut off and any message resumes
+the thread (the session id was persisted at run start). One bad run never
+crashes the process.
 
 A mention-bearing in-thread reply is delivered as BOTH an `app_mention` and a
 `message.*` event, so `app_mention` owns mentions (`on_message` skips replies
 that `<@>`-mention the bot) and a bounded in-memory idempotency guard dedups on
-a per-message id, ensuring every message is handled at most once.
+agent name + message id. The key is PER AGENT because the Slack message id is
+identical across every agent's delivery of one message: each agent answers a
+given message at most once, and two agents mentioned in one message BOTH answer.
+`on_message` also skips a follow-up whose text OPENS with another user's mention
+("@B what do you think?" is directed at that bot, whose own `app_mention` handles
+it); a mid-text mention is still an ordinary follow-up for the agents already in
+the thread. These checks rest on the bot's own user id, resolved via `auth_test`
+and cached per app; a FAILED lookup is not cached, so the next event retries it.
+Message subtypes (edits, deletes, joins) are ignored EXCEPT `file_share`: a user
+message carrying an upload arrives with that subtype, so a threaded follow-up
+that attaches a file still runs.
 For unmentioned threaded replies, `on_message` dispatches only when this agent
 already has a stored `(agent, thread)` session, so one agent's thread continuation
 cannot wake unrelated agents in the same channel.
 Before a normal run, `_handle` fetches a bounded `conversations.replies`
-transcript (last 50 visible Slack messages before the current event) and prepends
+transcript, following the pagination cursor (replies arrive OLDEST-first; up to
+6 pages of 200) and keeping the NEWEST 50 visible messages before the current
+event -- the thread's tail, never the stale head of a long thread -- and prepends
 it as "Visible Slack thread so far". This lets a newly mentioned agent read
 another agent's Slack-visible output in the same thread without sharing hidden
 CLI session state.
+
+**1:1 DMs ("im" channels) are message.im-only.** Slack does NOT dispatch
+`app_mention` in an im channel (mpim group DMs DO get it and stay on the normal
+path), so `on_message` routes every im-channel message straight to `_handle`
+BEFORE its thread/mention gates; `_handle`'s subtype/bot_id filtering and dedup
+still apply. `_handle` then splits the CONVERSATION KEY from the POSTING
+TARGET: a top-level DM message is keyed by the DM CHANNEL id (one rolling
+conversation per DM, spanning messages and restarts), while a threaded message
+inside a DM keeps the normal per-thread key. The key feeds every store,
+override, workdir, and interrupt lookup; posting goes through
+`_reply_thread_ts(key)` (in `handlers.py`, re-exported by the `app` facade): a
+ts-shaped key posts into that thread, a channel-id key posts FLAT
+(`thread_ts=None`, since Slack rejects a channel id as `thread_ts`). That
+translation covers the handler acks, the placeholder, control-phrase acks, the
+outbound `files_upload_v2` (whose workdir resolution still uses the raw key),
+and a cron fire whose stored `thread_ts` is a DM channel id. Flat DMs skip the
+`conversations.replies` transcript fetch: there is no thread to fetch, and the
+transcript exists to let OTHER agents read a shared thread, which does not
+apply in a 1:1 DM (the rolling per-channel session already carries the
+context).
 
 ## Hot-reload reconcile mechanics
 

@@ -13,8 +13,9 @@ from tests.helpers import (
 
 # ---------------------------------------------------------------------------
 # app.py file attachments: inbound download (url_private -> local path appended to
-# the prompt) and outbound upload (files produced in a designated workdir uploaded
-# back into the thread). All HTTP + Slack I/O is mocked: the download seam
+# the prompt) and outbound upload (only files the run NAMES in its <<files: ...>>
+# marker, resolved inside the thread's workdir, go back into the thread). All
+# HTTP + Slack I/O is mocked: the download seam
 # (_http_get_bytes) is patched and a fake client captures files_upload_v2; NO real
 # network/Slack call is ever made. src.app imported via the _HAVE_APP guard.
 # ---------------------------------------------------------------------------
@@ -173,12 +174,16 @@ def test_maybe_upload_named_uploads_resolved_files(monkeypatch, tmp_path):
         claude_runner, "get_workdir", lambda name, ts: str(workdir), raising=False
     )
     client = _FakeFileClient()
-    count = _appmod._maybe_upload_named(client, "C1", "T1", _FILE_AGENT, ["result.txt"])
+    # A REAL ts-shaped conversation key: the upload posts into that thread
+    # (a flat-DM channel-id key would post flat; see test_dm.py).
+    count = _appmod._maybe_upload_named(
+        client, "C1", "1700000000.000100", _FILE_AGENT, ["result.txt"]
+    )
     assert count == 1
     assert len(client.uploads) == 1
     up = client.uploads[0]
     assert up["channel"] == "C1"
-    assert up["thread_ts"] == "T1"
+    assert up["thread_ts"] == "1700000000.000100"
     assert up["file"] == os.path.realpath(str(produced))
     assert up["filename"] == "result.txt"
 
@@ -198,11 +203,11 @@ def test_parse_file_marker_extracts_and_strips():
     )
     assert clean == "Here is your plot."
     assert names == ["plot.png", "data.csv"]
-    # Two markers (degenerate; the run is meant to emit one, last): names come
-    # from the LAST, and everything from the FIRST marker onward is stripped.
+    # Two markers (degenerate; the run is meant to emit one, last): only the
+    # TRAILING marker triggers; the mid-text one is plain prose and stays.
     clean, names = _appmod._parse_file_marker("a <<files: x>> b <<files: y>>")
     assert names == ["y"]
-    assert clean == "a"
+    assert clean == "a <<files: x>> b"
     # Falsy input is returned as-is.
     assert _appmod._parse_file_marker("") == ("", [])
 

@@ -54,8 +54,8 @@ def _clear_interrupt_registry():
     spawning the worker; a test that fakes the worker thread never runs the real
     finally that releases it, so the slot would leak into later tests and make
     them read as "busy". Clearing before each test keeps the busy-guard tests
-    (and any that fake the Thread) independent. Best-effort: if slack_bolt is
-    absent and interrupt cannot import, there is nothing to clear.
+    (and any that fake the Thread) independent. Best-effort: if the import
+    fails, there is nothing to clear.
     """
     try:
         from src.slack import interrupt

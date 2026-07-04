@@ -29,8 +29,8 @@ import sys
 from pathlib import Path
 
 # Load .env FIRST and authoritatively, before any module that reads env at
-# import time (notably runners.claude_runner, imported later via .app inside
-# main(), which resolves the session-store path from os.environ). override=True
+# import time (notably the runners' *_TIMEOUT_MIN defaults, imported later via
+# .app inside main(); the store paths are read live per access). override=True
 # makes .env beat the shell. dotenv is optional so the offline `manifest`
 # subcommand still works without it (load_env returns False and is a no-op).
 from .env import load_env
@@ -80,7 +80,7 @@ def _print_manifest(argv):
             print(f"wrote {path}")
         return
 
-    # Print mode (unchanged): single object for a named agent, else a JSON array.
+    # Print mode: single object for a named agent, else a JSON array.
     if names:
         print(json.dumps(build_manifest(targets[0]), indent=2))
     else:

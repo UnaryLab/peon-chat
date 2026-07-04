@@ -18,21 +18,19 @@ The four default personas (each its own Slack app):
 
 The agents are defined declaratively in **`agents.json`** at the project root,
 the **single source of truth**. Each entry has `name`, `display_name`,
-`backend` (`"claude"` or `"codex"`), `model`, and `effort`; claude entries also
+`backend` (`"claude"` or `"codex"`), `model`, and `effort`. Claude entries also
 carry `claude_agent` (the namespaced `claude --agent` value, or `null` for a
-general run), which codex entries omit. Codex entries may carry an OPTIONAL
-`codex_profile`: the codex persona analog of `claude_agent`. Both name an
-operator-installed persona; `codex_profile` is the NAME of a
+general run). Codex entries may instead carry an OPTIONAL `codex_profile`, the
+codex persona analog of `claude_agent`: the NAME of an operator-installed
 `~/.codex/<name>.config.toml` profile (whose `developer_instructions` is the
-persona), which `codex_runner` applies as `--profile <name>` on the fresh run.
-Absent means a plain run; model and effort still come from `agents.json`.
-In short, `claude_agent` is for `claude`-backend agents only and
-`codex_profile` is for `codex`-backend agents only; each is ignored if set
-on the other backend. Dijkstra ships `codex_profile: project_manager`; that
-profile comes from the `unarylab-codex-marketplace` (its
-`scripts/install_profiles.py` installs `~/.codex/project_manager.config.toml`).
+persona), applied as `--profile <name>` on the fresh run. Absent means a plain
+run, and each persona field is ignored on the other backend. Dijkstra ships
+`codex_profile: project_manager`; that profile comes from the
+`unarylab-codex-marketplace` (its `scripts/install_profiles.py` installs
+`~/.codex/project_manager.config.toml`).
 `app.py` dispatches to the right runner via `runners.get_runner(backend)`.
-`src/agents.py` loads + validates `agents.json` into its `REGISTRY` at import.
+`src/agents.py` loads + validates `agents.json` into its `REGISTRY` at import
+(duplicate agent `name`s are rejected at load).
 
 Per-agent **model** and **effort** come SOLELY from the `model`/`effort` fields in
 `agents.json` (the single source of truth, set on every shipped entry). There is
@@ -101,11 +99,14 @@ invocations, context isolation, and the async model), see
 
 Each agent is its own Slack bot that you address by name.
 
-1. **Start a conversation.** In a channel, group, or DM, @-mention an agent with
-   your question. There is no command or keyword prefix: your whole message,
+1. **Start a conversation.** In a channel or group (including a group DM),
+   @-mention an agent with your question. There is no command or keyword prefix: your whole message,
    minus the mention, becomes the prompt and goes straight to that agent. The
    agent opens a reply thread under your message and answers there. You briefly
-   see a "...is thinking..." note, which is then replaced by the answer.
+   see a placeholder note (a random worker quote from `quotes.json` at the
+   project root, or "...is thinking..." when that file is absent/empty), which
+   is edited into the answer, incrementally while the reply streams. (A reply
+   too long for one Slack message is truncated to fit, with a note.)
 
    ```
    @Aristotle survey stochastic computing accelerators
@@ -115,30 +116,43 @@ Each agent is its own Slack bot that you address by name.
 2. **Continue the conversation.** Reply inside that thread. You can @-mention the
    agent again or just type your follow-up without mentioning it; either way the
    agent remembers the earlier turns in that thread and keeps the context.
-3. **Ask without typing a question.** If you @-mention an agent with no actual
+3. **DM an agent directly.** In an agent's 1:1 DM you just type, no mention
+   needed (Slack never delivers mentions as such in a DM, and there is only you
+   and the bot anyway). The whole DM is ONE rolling conversation: every
+   top-level DM message continues the same context, across messages and
+   restarts, and replies post directly in the DM (not in a thread). Starting a
+   thread on a DM message opens a separate conversation, exactly like a thread
+   anywhere else.
+4. **Ask without typing a question.** If you @-mention an agent with no actual
    question, it replies asking what you would like to ask.
-4. **Talk to several agents.** Mention different agents (Aristotle, Brunel,
-   Cicero, Dijkstra) to bring in different ones. Each remembers its own
+5. **Talk to several agents.** Mention different agents (Aristotle, Brunel,
+   Cicero, Dijkstra) to bring in different ones; mention two agents in the same
+   message and each answers (each still answers a given message only once). Each
+   remembers its own
    conversation separately, even in the same thread, so they do not share hidden
    CLI memory with each other. When an agent is invoked in an existing Slack
    thread, the visible prior thread messages are included in its prompt, so it can
    read another agent's Slack-visible output in that same thread.
-5. **Send and receive files.** Attach files to your message and the agent can
-   read them (their paths are passed to the CLI). The agent sends files back only
+6. **Send and receive files.** Attach files to your message and the agent can
+   read them (their paths are passed to the CLI); this works on unmentioned
+   thread follow-ups too. The agent sends files back only
    when you explicitly ask it to: it then ends its reply with a `<<files: ...>>`
    marker naming them, that marker is stripped from the message, and just those
-   files (from its per-thread workdir) are uploaded into the thread. An ordinary
+   files (from its per-thread workdir) are uploaded into the thread. Only a
+   marker at the very end of the reply counts (merely mentioning the syntax
+   mid-text does nothing), and an ordinary
    reply uploads nothing. (This needs the `files:read` / `files:write` scopes, see
    [Prerequisites](#prerequisites).)
-6. **See usage.** If the operator set `SHOW_USAGE`, each reply ends with a small
-   one-line footer (context %, tokens, cost, duration); fields that a backend does
-   not report are omitted.
+7. **See usage.** Each reply ends with a small one-line footer (context %,
+   tokens, cost, duration) unless the operator disabled `SHOW_USAGE` (default
+   on); fields that a backend does not report are omitted.
 
 ### Per-thread control phrases
 
 Inside a thread, a message that STARTS with `!` is a command to that agent for
 THIS thread only (it is acked and does not run the agent). Type it after the
-mention:
+mention; a command may span multiple lines (e.g. a `!cron add` whose prompt uses
+Shift+Enter):
 
 | Command | Effect (scoped to this thread + agent) |
 |---------|----------------------------------------|
@@ -149,6 +163,12 @@ mention:
 | `!cron add "<min hour dom month dow>" <prompt>` | Schedule a recurring run of `<prompt>` in this thread. |
 | `!cron list` | List scheduled crons. |
 | `!cron remove <id>` / `!cron on <id>` / `!cron off <id>` | Delete / enable / disable a cron by id. |
+
+**One run per thread.** While an agent is still working in a thread, a new
+message to it in that thread is declined with a short "still working" note:
+wait for the run to finish, or `!stop` it first. A scheduled `!cron` fire that
+lands while a run is already in flight in its thread is skipped the same way
+(its placeholder notes the skip).
 
 **SECURITY: agents run with full unsandboxed machine access.** Every agent runs
 FULLY UNSANDBOXED (claude `--permission-mode bypassPermissions`, codex
@@ -165,10 +185,15 @@ back into the thread. The live knobs (`SHOW_USAGE`, `STREAM_OUTPUT`,
 - Agents respond only when you @-mention them to start, and afterward they follow
   along inside threads they are already part of. They ignore ordinary channel
   messages that are not directed at them.
-- Even in a direct message, your first message must @-mention the agent; after
-  that, replies in the thread continue normally.
+- In a 1:1 DM every message you send wakes the agent, no mention needed: the
+  DM itself is one rolling conversation, and threads inside the DM behave like
+  threads anywhere else.
 - If several agents share a channel, an unmentioned reply inside a thread wakes
-  only agents that already have a session in that thread. @-mention another agent
+  only agents that already have a session in that thread. A follow-up that OPENS
+  with an @-mention of someone else (e.g. another bot) is treated as directed at
+  them and skipped (a mid-text
+  mention still counts as a follow-up for the agents already in the thread).
+  @-mention another agent
   to bring it into the thread; it will receive the visible thread history as
   context.
 - Agents never trigger each other. Any message posted by a bot (including one that
@@ -191,18 +216,14 @@ Four steps:
    ```json
    {"name": "euclid", "display_name": "Euclid", "backend": "codex", "model": "gpt-5.5", "effort": "high"}
    ```
-   A codex entry may add an OPTIONAL `"codex_profile"`: the NAME of an
-   operator-installed `~/.codex/<name>.config.toml` profile (whose
-   `developer_instructions` is the persona). It is the codex analog of
-   `claude_agent`; `codex_runner` applies it as `--profile <name>` on the fresh
-   run, and model/effort still come from `agents.json`. Omit it for a plain run:
+   A codex entry may add an OPTIONAL `"codex_profile"`, naming an
+   operator-installed codex persona (see the intro above). Omit it for a plain
+   run:
    ```json
    {"name": "euclid", "display_name": "Euclid", "backend": "codex", "codex_profile": "euclid", "model": "gpt-5.5", "effort": "high"}
    ```
    Set the `"model"` and `"effort"` fields for this agent (every shipped entry
-   does). Omitting a field falls back to a single code-level default (claude model
-   -> `claude-opus-4-8[1m]`; everything else -> omitted) and logs a warning, since
-   `agents.json` is the sole source of truth for them (no env-var override).
+   does; the fallback rules for an omitted field are described in the intro).
 2. Generate Euclid's Slack app manifest with `python -m src manifest euclid` (or
    `python -m src manifest euclid --write` to save it as
    `manifests/manifest-euclid.json` instead of printing; `--write` with no name
@@ -270,11 +291,19 @@ means that agent is treated as not-yet-startable until the next reload.
    `python -m src manifest` with no name to print every agent's manifest as a
    JSON array at once. For EACH app:
    - **Bot scopes** (already in the manifest): `app_mentions:read`, `chat:write`,
-     plus `channels:history`, `groups:history`, `im:history` so the bot can read
-     threaded replies it should continue, and `files:read` / `files:write` so it
+     plus `channels:history`, `groups:history`, `im:history`, `mpim:history` so
+     the bot can read
+     threaded replies it should continue (including in group DMs), and
+     `files:read` / `files:write` so it
      can read attachments and upload files it produces.
    - **Event subscriptions** (already in the manifest): `app_mention` (and
-     `message.channels`, `message.groups`, `message.im` for thread follow-ups).
+     `message.channels`, `message.groups`, `message.im`, `message.mpim` for
+     thread follow-ups).
+   - **Existing apps:** if you created an app from an older manifest (before the
+     `mpim:history` scope and `message.mpim` event, or before the `files:*`
+     scopes), regenerate its manifest with `python -m src manifest <name>`,
+     update the app from it (or add the scope/event by hand), and REINSTALL the
+     app so the additions take effect.
    - **Socket Mode**: enabled. Create an **App-Level Token** (Basic Information
      -> App-Level Tokens) with the `connections:write` scope (`xapp-...`).
    - Install the app to your workspace to get its **Bot User OAuth Token**
@@ -298,9 +327,11 @@ warning, so you can run with just one configured agent.
 **`.env` is authoritative: it overrides shell-exported environment variables.**
 It is loaded first and with `override=True`, so a value in `.env` wins over any
 matching variable already exported in your shell. This applies to every config
-var, including `SESSIONS_PATH` and the `*_TIMEOUT_MIN` timeouts, which now
-take effect from `.env` (the session-store path is resolved live at store
-access, so it honors `.env` even though it is read early at import time).
+var, including `SESSIONS_PATH` and the `*_TIMEOUT_MIN` timeouts (the
+session-store path is resolved live at store access, so it honors `.env` even
+though it is read early at import time). A malformed `*_TIMEOUT_MIN` (e.g.
+`90m`) logs a warning and the default is used; it never kills the process at
+startup.
 
 **Skills that need extra environment or web access.** peon spawns the CLI with no
 explicit `env=`, so every variable in `.env` is inherited by the `claude`/`codex`
@@ -358,13 +389,19 @@ launchctl load -w ~/Library/LaunchAgents/com.unarylab.peon.plist
 Edit the plist for your machine:
 
 - Set `WorkingDirectory` to your repo path (e.g. `/Users/<you>/Projects/peon`).
-- In `ProgramArguments`, use the **absolute path to `conda`**. launchd runs with a
-  minimal `PATH`, so a bare `conda` (or `/usr/bin/env conda`) will not resolve;
-  point at the real binary, e.g.
-  `/Users/<you>/anaconda3/bin/conda run -n peon --no-capture-output python -m src`.
-- `RunAtLoad` = `true` (start at login/boot) and `KeepAlive` = `true` (auto-restart
-  on crash) are already set in the template, which is what makes it survive reboots.
-- `StandardOutPath` / `StandardErrorPath` point at a log (e.g. `peon.log`).
+- Make the binaries resolvable: launchd runs with a minimal `PATH`
+  (`/usr/bin:/bin:/usr/sbin:/sbin`), so the template's `/usr/bin/env conda` and
+  the bare `claude`/`codex` the runners spawn both need an
+  `EnvironmentVariables` > `PATH` key covering your conda dir and `~/.local/bin`
+  (or replace `env conda` with conda's absolute path).
+- The rest is already set in the template: the command is wrapped in
+  `caffeinate -i` (holds off idle sleep during long runs), `RunAtLoad` and
+  `KeepAlive` are `true` (start at login/boot, auto-restart on crash, which is
+  what makes it survive reboots), and `ThrottleInterval` is 30s (no relaunch
+  hot-loop after a crash).
+- To log to a file, add `StandardOutPath` / `StandardErrorPath` keys (e.g.
+  `peon.log`). Runtime config belongs in `.env`, not the plist (see the
+  template's comments).
 
 Manage it:
 
@@ -375,7 +412,7 @@ Manage it:
 - **Full restart (for code changes):**
   `launchctl kickstart -k gui/$(id -u)/com.unarylab.peon`.
 - **Stop / disable:** `launchctl unload -w ~/Library/LaunchAgents/com.unarylab.peon.plist`.
-- **Logs:** the plist's `StandardOutPath` (e.g. `peon.log`).
+- **Logs:** wherever you pointed `StandardOutPath` (e.g. `peon.log`).
 
 This is the macOS equivalent of the `systemd` unit above; `deploy/peon.service` is
 the Linux always-on option and `deploy/com.unarylab.peon.plist` is the macOS one.

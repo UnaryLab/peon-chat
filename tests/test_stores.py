@@ -112,9 +112,9 @@ def test_get_workdir_independent_across_agent_and_thread(monkeypatch, tmp_path):
 
 def test_get_workdir_returns_absolute_path(monkeypatch, tmp_path):
     # get_workdir must ALWAYS return an absolute path even when WORKDIR_BASE is set
-    # to a relative override: the subprocess cwd and claude --add-dir cannot take a
-    # relative/ambiguous path. Use a deliberately RELATIVE WORKDIR_BASE and confirm
-    # the result is absolute and resolves against cwd.
+    # to a relative override: the subprocess cwd cannot take a relative/ambiguous
+    # path. Use a deliberately RELATIVE WORKDIR_BASE and confirm the result is
+    # absolute and resolves against cwd.
     monkeypatch.setenv("WORKDIR_BASE", "rel-base")
     path = claude_runner.get_workdir("aristotle", "T1")
     assert os.path.isabs(path)
@@ -514,6 +514,7 @@ def test_build_manifest_name_fields_scopes_events_and_socket():
         "channels:history",
         "groups:history",
         "im:history",
+        "mpim:history",
         "files:read",
         "files:write",
     ]
@@ -522,6 +523,7 @@ def test_build_manifest_name_fields_scopes_events_and_socket():
         "message.channels",
         "message.groups",
         "message.im",
+        "message.mpim",
     ]
     assert m["settings"]["socket_mode_enabled"] is True
     assert m["settings"]["token_rotation_enabled"] is False

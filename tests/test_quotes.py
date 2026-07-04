@@ -154,10 +154,12 @@ def test_handle_includes_prior_thread_history_in_prompt(monkeypatch):
     assert "Agent A: X is 42" in prompt
     assert "Current request:\nwhat did A say?" in prompt
     assert prompt.count("what did A say?") == 1
+    # The fetch is paginated (large pages, cursor-followed); a single page with
+    # no next_cursor means exactly one call.
     client.conversations_replies.assert_called_once_with(
         channel="C1",
         ts="910.000",
-        limit=handlers._THREAD_HISTORY_LIMIT,
+        limit=handlers._THREAD_HISTORY_PAGE_LIMIT,
     )
 
 

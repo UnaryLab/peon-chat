@@ -42,7 +42,9 @@ import time
 from src import agents
 from src.runners.common import (
     _cwd_from_overrides,
+    _int_env,
     _stream_enabled,
+    drain_stderr,
     format_process_failure,
     safe_on_update,
 )
@@ -50,7 +52,9 @@ from src.runners.common import (
 # Default timeout for a single codex run, in MINUTES. A run can take
 # 10s..minutes. Read as minutes and converted to seconds (*60) at the call site
 # for subprocess.run; default 2880 minutes (2 days).
-DEFAULT_TIMEOUT_MIN = int(os.environ.get("CODEX_TIMEOUT_MIN", "2880"))
+# A malformed value is tolerated (warning + default) so a bad .env cannot kill
+# the process at import time.
+DEFAULT_TIMEOUT_MIN = _int_env("CODEX_TIMEOUT_MIN", 2880)
 
 
 # Model and reasoning effort come SOLELY from the agent's agents.json entry
@@ -94,7 +98,8 @@ def build_command(
     run produces can be uploaded back; the run itself is unconfined.
 
     Notes:
-      - `--skip-git-repo-check` is REQUIRED (this project is not a git repo).
+      - `--skip-git-repo-check` is REQUIRED (the run's cwd, the per-thread
+        workdir, is not a git repo).
       - The `resume` subcommand does NOT accept `-s/--sandbox` or `-a`; sandbox
         is set via `-c sandbox_mode=danger-full-access`. Do not TOML-quote this
         enum: codex treats `"danger-full-access"` as the literal variant name.
@@ -411,6 +416,7 @@ def run_codex(
                     argv,
                     capture_output=True,
                     text=True,
+                    errors="replace",  # tolerate non-UTF8 output (kwarg only, argv unchanged)
                     timeout=timeout,
                     cwd=cwd,
                 )
@@ -430,7 +436,9 @@ def run_codex(
         duration_s = time.monotonic() - started
 
         try:
-            with open(last_message_file, "r", encoding="utf-8") as f:
+            # errors="replace": the model's reply file is not guaranteed valid
+            # UTF-8; a stray byte must degrade, not raise UnicodeDecodeError.
+            with open(last_message_file, "r", encoding="utf-8", errors="replace") as f:
                 reply = f.read().strip()
         except OSError as exc:
             raise CodexRunError(f"could not read codex reply file: {exc}") from exc
@@ -476,38 +484,50 @@ def _run_codex_streaming(argv, timeout, on_update, cwd=None, cancel=None):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        errors="replace",  # never let a stray non-UTF8 byte raise UnicodeDecodeError
         cwd=cwd,
     )
     if cancel is not None:
-        cancel.proc = proc  # let a !stop SIGINT this run; see common.Interrupt
+        cancel.arm(proc)  # let a !stop SIGINT this run; see common.Interrupt
+    # Drain stderr CONCURRENTLY: a CLI writing >~64KB to a PIPE'd stderr would
+    # otherwise block and stop producing stdout, deadlocking the readline loop.
+    read_stderr = drain_stderr(proc) if proc.stderr is not None else lambda: ""
 
     lines = []
     latest_text = None
     try:
         assert proc.stdout is not None  # PIPE is set above
-        for line in proc.stdout:
-            lines.append(line)
-            stripped = line.strip()
-            if not stripped:
-                continue
-            try:
-                event = json.loads(stripped)
-            except json.JSONDecodeError:
-                continue
-            text = _agent_message_text_from_event(event)
-            # Codex emits the agent message as a growing/whole item; take the
-            # latest non-empty text seen so a later, more-complete item wins.
-            if not text:
-                continue
-            completed = _is_completed_item(event)
-            # Skip an unchanged NON-terminal re-emission; a completed item always
-            # flushes (force=True) so the finished message shows in FULL even if the
-            # throttle dropped the prior update before a long quiet (tool) gap. The
-            # updater's own last-text dedup drops a truly redundant re-post.
-            if text == latest_text and not completed:
-                continue
-            latest_text = text
-            safe_on_update(on_update, text, force=completed)
+        try:
+            for line in proc.stdout:
+                lines.append(line)
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    event = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
+                text = _agent_message_text_from_event(event)
+                # Codex emits the agent message as a growing/whole item; take the
+                # latest non-empty text seen so a later, more-complete item wins.
+                if not text:
+                    continue
+                completed = _is_completed_item(event)
+                # Skip an unchanged NON-terminal re-emission; a completed item always
+                # flushes (force=True) so the finished message shows in FULL even if the
+                # throttle dropped the prior update before a long quiet (tool) gap. The
+                # updater's own last-text dedup drops a truly redundant re-post.
+                if text == latest_text and not completed:
+                    continue
+                latest_text = text
+                safe_on_update(on_update, text, force=completed)
+        except (ValueError, OSError):
+            # A !stop closed proc.stdout to unblock a reader wedged by an orphaned
+            # write fd (see Interrupt._deliver): settle gracefully exactly like the
+            # nonzero-exit cancel branch. Anything else is a real error.
+            if cancel is not None and cancel.requested:
+                return "".join(lines)
+            raise
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
@@ -524,8 +544,9 @@ def _run_codex_streaming(argv, timeout, on_update, cwd=None, cancel=None):
         # instead of raising on the SIGINT-induced nonzero exit.
         if cancel is not None and cancel.requested:
             return "".join(lines)
-        stderr = (proc.stderr.read() if proc.stderr else "") or ""
-        raise CodexRunError(format_process_failure("codex", proc.returncode, stderr))
+        raise CodexRunError(
+            format_process_failure("codex", proc.returncode, read_stderr())
+        )
 
     return "".join(lines)
 

@@ -19,14 +19,15 @@ public surface is re-exported by the `claude_runner` facade module.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import uuid
 
 from src import agents
 from src.runners.common import (
     _cwd_from_overrides,
+    _int_env,
     _stream_enabled,
+    drain_stderr,
     format_process_failure,
     safe_on_update,
 )
@@ -39,7 +40,9 @@ from src.runners.common import (
 # 10s..minutes. This is the only env-driven knob here; model/effort are NOT (see
 # the note below). Read as minutes and converted to seconds (*60) at the call site
 # for subprocess.run; default 2880 minutes (2 days).
-DEFAULT_TIMEOUT_MIN = int(os.environ.get("CLAUDE_TIMEOUT_MIN", "2880"))
+# A malformed value is tolerated (warning + default) so a bad .env cannot kill
+# the process at import time.
+DEFAULT_TIMEOUT_MIN = _int_env("CLAUDE_TIMEOUT_MIN", 2880)
 
 # Model and reasoning effort come SOLELY from the agent's agents.json entry
 # (resolved in build_command via agents.resolve). There is NO global env-var layer.
@@ -68,6 +71,19 @@ class ClaudeRunError(Exception):
 # clear the dead id and retry ONCE as a fresh session, so a stale id can never wedge
 # a thread forever.
 _DEAD_SESSION_MARKER = "No conversation found with session ID"
+
+
+def _is_dead_session_error(exc):
+    """True if `exc` reports the dead-session marker.
+
+    Checks the FULL raw stderr carried on the error (err.stderr, attached where
+    the error is raised) as well as str(exc): the formatted message truncates
+    stderr detail to 1000 chars, so >1000 chars of noise before the marker must
+    not defeat the self-heal.
+    """
+    if _DEAD_SESSION_MARKER in str(exc):
+        return True
+    return _DEAD_SESSION_MARKER in (getattr(exc, "stderr", None) or "")
 
 
 # ---------------------------------------------------------------------------
@@ -323,39 +339,61 @@ def _run_claude_streaming(agent, argv, timeout, overrides, on_update, cancel=Non
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        errors="replace",  # never let a stray non-UTF8 byte raise UnicodeDecodeError
         cwd=_cwd_from_overrides(overrides),
     )
     if cancel is not None:
-        cancel.proc = proc  # let a !stop SIGINT this run; see common.Interrupt
+        cancel.arm(proc)  # let a !stop SIGINT this run; see common.Interrupt
+    # Drain stderr CONCURRENTLY: a CLI writing >~64KB to a PIPE'd stderr would
+    # otherwise block and stop producing stdout, deadlocking the readline loop.
+    read_stderr = drain_stderr(proc) if proc.stderr is not None else lambda: ""
+
+    def _settle_cancel():
+        """The graceful !stop settle: the result payload if it arrived, else the
+        accumulated deltas (possibly ""). The caller knows the session id up
+        front, so the thread stays resumable."""
+        if result_payload is not None and result_payload.get("result") is not None:
+            return result_payload["result"], _meta_from_payload(
+                result_payload, agent, overrides
+            )
+        return "".join(accumulated), _meta_from_payload({}, agent, overrides)
 
     accumulated = []
     result_payload = None
     try:
         # Readline-loop over stdout. The CLI emits one JSON object per line.
         assert proc.stdout is not None  # PIPE is set above
-        for line in proc.stdout:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                # A stray non-JSON line (rare) is skipped, not fatal.
-                continue
-            if event.get("type") == "result":
-                result_payload = event
-                continue
-            chunk = _text_delta_from_stream_event(event)
-            if chunk:
-                accumulated.append(chunk)
-                safe_on_update(on_update, "".join(accumulated))
-            elif _is_block_stop(event) and accumulated:
-                # A content block just ended: force-flush the full accumulated text
-                # past the updater's 1/sec throttle so a completed text block (the
-                # agent's initial preamble, before a long tool/subagent call that
-                # emits no more text deltas) shows in FULL, not the mid-sentence
-                # fragment the throttle last posted.
-                safe_on_update(on_update, "".join(accumulated), force=True)
+        try:
+            for line in proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    # A stray non-JSON line (rare) is skipped, not fatal.
+                    continue
+                if event.get("type") == "result":
+                    result_payload = event
+                    continue
+                chunk = _text_delta_from_stream_event(event)
+                if chunk:
+                    accumulated.append(chunk)
+                    safe_on_update(on_update, "".join(accumulated))
+                elif _is_block_stop(event) and accumulated:
+                    # A content block just ended: force-flush the full accumulated text
+                    # past the updater's 1/sec throttle so a completed text block (the
+                    # agent's initial preamble, before a long tool/subagent call that
+                    # emits no more text deltas) shows in FULL, not the mid-sentence
+                    # fragment the throttle last posted.
+                    safe_on_update(on_update, "".join(accumulated), force=True)
+        except (ValueError, OSError):
+            # A !stop closed proc.stdout to unblock a reader wedged by an orphaned
+            # write fd (see Interrupt._deliver): settle gracefully exactly like the
+            # nonzero-exit cancel branch. Anything else is a real error.
+            if cancel is not None and cancel.requested:
+                return _settle_cancel()
+            raise
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
@@ -367,17 +405,15 @@ def _run_claude_streaming(agent, argv, timeout, overrides, on_update, cancel=Non
             proc.wait()
 
     if proc.returncode != 0:
-        # User interrupt (!stop): settle gracefully with the result payload if it
-        # arrived, else the accumulated deltas (possibly ""), rather than raising.
-        # The caller knows the session id up front, so the thread stays resumable.
+        # User interrupt (!stop): settle gracefully rather than raising.
         if cancel is not None and cancel.requested:
-            if result_payload is not None and result_payload.get("result") is not None:
-                return result_payload["result"], _meta_from_payload(
-                    result_payload, agent, overrides
-                )
-            return "".join(accumulated), _meta_from_payload({}, agent, overrides)
-        stderr = (proc.stderr.read() if proc.stderr else "") or ""
-        raise ClaudeRunError(format_process_failure("claude", proc.returncode, stderr))
+            return _settle_cancel()
+        stderr = read_stderr()
+        err = ClaudeRunError(format_process_failure("claude", proc.returncode, stderr))
+        # Carry the FULL stderr for marker checks (e.g. the dead-session heal in
+        # answer()), which must not be defeated by the message's 1000-char cut.
+        err.stderr = stderr
+        raise err
 
     if result_payload is not None:
         if result_payload.get("is_error"):
@@ -453,6 +489,7 @@ def run_claude(
             argv,
             capture_output=True,
             text=True,
+            errors="replace",  # tolerate non-UTF8 CLI output (kwarg only, argv unchanged)
             timeout=timeout,
             cwd=_cwd_from_overrides(overrides),
         )
@@ -461,7 +498,7 @@ def run_claude(
 
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()
-        raise ClaudeRunError(
+        err = ClaudeRunError(
             format_process_failure(
                 "claude",
                 proc.returncode,
@@ -469,6 +506,10 @@ def run_claude(
                 stdout=getattr(proc, "stdout", ""),
             )
         )
+        # Carry the FULL stderr for marker checks (the dead-session heal in
+        # answer()), which the formatted message's 1000-char cut would defeat.
+        err.stderr = stderr
+        raise err
 
     stdout = (proc.stdout or "").strip()
     if not stdout:
@@ -578,7 +619,7 @@ def answer(
             cancel=cancel,
         )
     except ClaudeRunError as exc:
-        if is_new_session or _DEAD_SESSION_MARKER not in str(exc):
+        if is_new_session or not _is_dead_session_error(exc):
             raise
         # The stored id is dead (claude has no such session), so every resume of it
         # would fail forever. Mint+persist a fresh id (this overwrites the dead one,

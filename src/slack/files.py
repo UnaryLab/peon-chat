@@ -43,32 +43,39 @@ _SKIP_DIRS = {
 
 # Outbound delivery is opt-in: a run requests it by ENDING its reply with a
 # `<<files: a, b>>` marker naming the files. Default (no marker) uploads nothing.
-# _RE matches a complete marker (group 1 = the comma-separated names); _STRIP_RE
-# removes from the first marker-open to end so a partial/unterminated marker
-# still mid-stream (e.g. "<<files: pl") is also scrubbed from the shown reply.
-_FILES_MARKER_RE = re.compile(r"<<\s*files\s*:\s*(.*?)>>", re.IGNORECASE | re.DOTALL)
-_FILES_MARKER_STRIP_RE = re.compile(r"\s*<<\s*files\s*:.*", re.IGNORECASE | re.DOTALL)
+# BOTH regexes act ONLY on a TRAILING marker (anchored at end of text): a reply
+# that merely MENTIONS the marker syntax mid-text is plain prose and triggers
+# nothing (and loses nothing after it). The marker body excludes ">>" (tempered
+# dot) so a mid-text complete marker followed by prose can never anchor to the
+# end. _RE captures the trailing complete marker's names (group 1); _STRIP_RE
+# also scrubs a partial/unterminated trailing marker still mid-stream (e.g.
+# "<<files: pl") so it never flashes in the streamed reply.
+_FILES_MARKER_RE = re.compile(r"<<\s*files\s*:\s*((?:(?!>>).)*)>>\s*$", re.IGNORECASE)
+_FILES_MARKER_STRIP_RE = re.compile(
+    r"\s*<<\s*files\s*:(?:(?!>>).)*(?:>>)?\s*$", re.IGNORECASE
+)
 
 
 def _strip_file_marker(text):
-    """Remove any `<<files: ...>>` marker (complete or trailing/partial) from text."""
+    """Remove a TRAILING `<<files: ...>>` marker (complete or partial) from text."""
     if not text:
         return text
     return _FILES_MARKER_STRIP_RE.sub("", text)
 
 
 def _parse_file_marker(text):
-    """Split text into (clean_text, names): names from the LAST complete marker.
+    """Split text into (clean_text, names): names from the TRAILING complete marker.
 
-    No marker -> (text, []). The marker and everything after it is stripped from
-    clean_text (the marker is emitted last, so nothing real follows it).
+    No trailing marker -> (text, []); a mid-text marker mention is plain text and
+    triggers nothing. The trailing marker is stripped from clean_text (the marker
+    is emitted last, so nothing real follows it).
     """
     if not text:
         return text, []
-    matches = _FILES_MARKER_RE.findall(text)
+    match = _FILES_MARKER_RE.search(text)
     names = []
-    if matches:
-        names = [n.strip() for n in matches[-1].split(",") if n.strip()]
+    if match:
+        names = [n.strip() for n in match.group(1).split(",") if n.strip()]
     clean = _FILES_MARKER_STRIP_RE.sub("", text).rstrip()
     return clean, names
 
@@ -101,6 +108,13 @@ def _resolve_named_files(workdir, names):
     return sorted(set(found))
 
 
+# Timeout (seconds) for one inbound attachment download. The download runs on
+# the listener thread AFTER the thread's busy slot is claimed; without a timeout
+# a stalled CDN read would wedge that slot forever, with no subprocess for !stop
+# to signal.
+_HTTP_TIMEOUT_S = 60
+
+
 def _http_get_bytes(url, token):
     """Download `url` with the bot token and return the raw bytes.
 
@@ -109,7 +123,9 @@ def _http_get_bytes(url, token):
     seam so tests patch it (or urllib.request.urlopen) and never hit the network.
     """
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(req) as resp:  # noqa: S310 - Slack https url, header-auth
+    with urllib.request.urlopen(  # noqa: S310 - Slack https url, header-auth
+        req, timeout=_HTTP_TIMEOUT_S
+    ) as resp:
         return resp.read()
 
 
@@ -226,7 +242,15 @@ def _maybe_upload_named(client, channel, thread_ts, agent, names):
     (see _resolve_named_files; paths escaping the workdir are rejected) and the
     resolved files are uploaded. Guarded so an upload error never crashes the
     worker.
+
+    `thread_ts` is the conversation KEY (a thread ts, or the DM channel id for
+    a flat 1:1 DM): the workdir is resolved from the KEY, but the upload's
+    POSTING target goes through _reply_thread_ts (a Kind-B name, resolved
+    through the app facade like the other seams here) so a flat-DM upload
+    posts flat (Slack rejects a channel id as thread_ts).
     """
+    from src import app as _appfacade
+
     if not names:
         return 0
     workdir = _thread_workdir(agent, thread_ts)
@@ -235,4 +259,6 @@ def _maybe_upload_named(client, channel, thread_ts, agent, names):
     produced = _resolve_named_files(workdir, names)
     if not produced:
         return 0
-    return _upload_workdir_files(client, channel, thread_ts, produced)
+    return _upload_workdir_files(
+        client, channel, _appfacade._reply_thread_ts(thread_ts), produced
+    )

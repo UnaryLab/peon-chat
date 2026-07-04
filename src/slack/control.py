@@ -18,7 +18,12 @@ from src.runners import claude_runner
 
 from . import interrupt, scheduler
 
-CONTROL_RE = re.compile(r"^!(model|effort|reset|cron)\b\s*(.*)$", re.IGNORECASE)
+# DOTALL so a multi-line phrase (Shift+Enter, e.g. a !cron add whose prompt spans
+# lines) still matches; without it the arg's `.*` stops at the first newline and
+# the whole phrase falls through to the help ack.
+CONTROL_RE = re.compile(
+    r"^!(model|effort|reset|cron)\b\s*(.*)$", re.IGNORECASE | re.DOTALL
+)
 
 # The reasoning-effort levels accepted by !effort. Anything else is rejected.
 VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")

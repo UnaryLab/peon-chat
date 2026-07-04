@@ -28,6 +28,22 @@ logger = logging.getLogger("peon")
 # Matches a Slack user mention like <@U123ABC> so we can strip the bot tag.
 MENTION_RE = re.compile(r"<@[A-Z0-9]+>")
 
+# A conversation KEY is either a Slack thread ts ("1234.5678") or, for a
+# top-level 1:1 DM message, the DM CHANNEL id ("D0123ABCDEF"): flat DMs get ONE
+# rolling conversation per DM channel (see _handle). The key shape tells the
+# two apart at post time.
+_THREAD_TS_RE = re.compile(r"\d+\.\d+")
+
+
+def _reply_thread_ts(conv_key):
+    """The thread_ts to POST under for a conversation key. A thread key is a
+    Slack ts ("1234.5678") and replies go in that thread; a flat-DM key is the
+    DM channel id, and replies post flat (thread_ts=None; Slack rejects a
+    channel id passed as thread_ts).
+    """
+    return conv_key if _THREAD_TS_RE.fullmatch(conv_key or "") else None
+
+
 # Italic notice appended to (or replacing) a reply when a run is interrupted via
 # !stop. One constant so the worker's two emit sites never drift.
 _INTERRUPTED_NOTICE = "_(interrupted)_"
@@ -67,6 +83,33 @@ def _format_final_response(text):
 
 
 _THREAD_HISTORY_LIMIT = 50
+
+# Pagination for the transcript fetch: conversations.replies returns OLDEST-first,
+# so a long thread needs the cursor followed to reach the tail (the most recent
+# exchange). A few large pages bound the work; only the LAST
+# _THREAD_HISTORY_LIMIT messages are kept.
+_THREAD_HISTORY_PAGE_LIMIT = 200
+_THREAD_HISTORY_MAX_PAGES = 6
+
+# Slack rejects chat_update/chat_postMessage text over 40,000 chars
+# (msg_too_long), which would turn a long finished reply into a generic error.
+# Cap run output BELOW that, leaving margin for the truncation note, the
+# interrupted label, and the usage footer appended after the cap.
+_SLACK_MAX_TEXT_LEN = 39_000
+_TRUNCATION_NOTICE = "\n… _(truncated: full reply too long for Slack)_"
+
+
+def _truncate_for_slack(text):
+    """Cap run-output text so a chat_update never trips Slack's msg_too_long.
+
+    Keeps the HEAD of the text and appends a short truncation note. Callers
+    apply it AFTER the <<files:>> marker is parsed/stripped (so file delivery
+    still works) and BEFORE the interrupted label / usage footer are appended
+    (so those always survive).
+    """
+    if not text or len(text) <= _SLACK_MAX_TEXT_LEN:
+        return text
+    return text[:_SLACK_MAX_TEXT_LEN] + _TRUNCATION_NOTICE
 
 
 def _ts_before(left, right):
@@ -113,20 +156,39 @@ def _format_thread_history(messages, current_ts):
 
 
 def _fetch_thread_history(client, channel, thread_ts, current_ts):
-    """Fetch a bounded visible Slack-thread transcript before the current message."""
+    """Fetch a bounded visible Slack-thread transcript before the current message.
+
+    Replies come OLDEST-first, so the response_metadata.next_cursor pages are
+    followed (bounded by _THREAD_HISTORY_MAX_PAGES) and only the LAST
+    _THREAD_HISTORY_LIMIT messages are kept: the transcript is the thread's TAIL
+    (the most recent exchange), never the stale head of a long thread.
+    """
+    messages = []
+    cursor = None
     try:
-        response = client.conversations_replies(
-            channel=channel,
-            ts=thread_ts,
-            limit=_THREAD_HISTORY_LIMIT,
-        )
+        for _ in range(_THREAD_HISTORY_MAX_PAGES):
+            kwargs = {
+                "channel": channel,
+                "ts": thread_ts,
+                "limit": _THREAD_HISTORY_PAGE_LIMIT,
+            }
+            if cursor:
+                kwargs["cursor"] = cursor
+            response = client.conversations_replies(**kwargs)
+            page = response.get("messages") if hasattr(response, "get") else None
+            if not isinstance(page, list):
+                break
+            messages.extend(page)
+            meta = response.get("response_metadata")
+            cursor = meta.get("next_cursor") if isinstance(meta, dict) else None
+            if not cursor:
+                break
     except Exception:  # noqa: BLE001 - history is helpful context, not required
         logger.warning("failed to fetch Slack thread history for %s", thread_ts)
         return ""
-    messages = response.get("messages") if hasattr(response, "get") else None
-    if not isinstance(messages, list):
+    if not messages:
         return ""
-    return _format_thread_history(messages, current_ts)
+    return _format_thread_history(messages[-_THREAD_HISTORY_LIMIT:], current_ts)
 
 
 def _append_thread_history(prompt, history):
@@ -167,7 +229,8 @@ def _make_stream_updater(client, channel, placeholder_ts, now=None):
         nonlocal last_post, last_text
         # Scrub any (possibly partial) <<files: ...>> marker so it never flashes
         # mid-stream; the final update strips it for real via _parse_file_marker.
-        text = files._strip_file_marker(text)
+        # Then cap the partial so a long stream never trips Slack's msg_too_long.
+        text = _truncate_for_slack(files._strip_file_marker(text))
         # Skip empties (Slack rejects them) and no-op re-posts (a force-flush on a
         # tool_use block_stop carries the SAME text as the text block before it).
         if not text or text == last_text:
@@ -227,18 +290,35 @@ def _run_and_update(
     # Register a cancel token so a "!stop" in this thread can SIGINT the run; the
     # finally below always drops it. See src.slack.interrupt / common.Interrupt.
     # _handle pre-registers via try_register (the busy guard) and passes the token
-    # in; callers without one (cron) register their own here.
+    # in; callers without one (cron) claim the slot the same way here, so a
+    # scheduled run can never clobber a live user run's token (which would race
+    # two --resumes of one session id and point !stop at the wrong run).
     if token is None:
-        token = interrupt.register(agent["name"], thread_ts)
+        token = interrupt.try_register(agent["name"], thread_ts)
+        if token is None:
+            logger.info(
+                "declining run for %s in thread %s: a run is already in progress",
+                agent["name"],
+                thread_ts,
+            )
+            try:
+                client.chat_update(
+                    channel=channel,
+                    ts=placeholder_ts,
+                    text="_skipped: a run is already in progress in this thread._",
+                )
+            except Exception:  # noqa: BLE001 - a Slack hiccup must not raise here
+                logger.warning("failed to mark the skipped run's placeholder")
+            return
     # Bound before the try so the error branch can always read the last streamed
     # text, even if a ClaudeRunError were ever raised before the updater is built.
     streamed = {"text": ""}
     try:
         runner = runners.get_runner(agent.get("backend", "claude"))
         prior = store.get_session(agent["name"], thread_ts)
-        # Identity: agents carry no injected name, so without this they read the
-        # repo's CLAUDE.md (the inherited cwd) and identify as the framework / the
-        # first agent listed there (Aristotle). Prepend a one-line identity to
+        # Identity: agents carry no built-in name, so without this they can
+        # misidentify (e.g. read a stray CLAUDE.md they can reach and answer as
+        # the first agent listed there, Aristotle). Prepend a one-line identity to
         # EVERY message: a fresh thread learns its name, and a thread that already
         # learned the wrong one (created before this fix) is corrected on its next
         # turn. Gating on `prior is None` left those old threads stuck on Aristotle.
@@ -297,6 +377,11 @@ def _run_and_update(
         # / usage footer are appended, so it is gone from the posted reply and the
         # named files drive the outbound upload below.
         text, upload_names = files._parse_file_marker(text)
+        # Cap the body BELOW Slack's 40k chat_update limit AFTER the marker split
+        # (file delivery survives) and BEFORE the notice/footer appends (they
+        # survive too); an over-limit final update would otherwise raise
+        # msg_too_long and destroy the whole reply.
+        text = _truncate_for_slack(text)
         # User interrupt: the run settled early. Mark the (partial) reply so the
         # thread reads like a terminal Ctrl-C. token.proc guards the rare non-stream
         # case where the flag was set but nothing was actually killable.
@@ -331,7 +416,9 @@ def _run_and_update(
             # If the run streamed partial text before erroring, keep it (plus a
             # resume note) rather than throwing it away for a bare error. The
             # session id was persisted at run start, so the thread is resumable.
-            partial = files._strip_file_marker(streamed["text"]).strip()
+            partial = _truncate_for_slack(
+                files._strip_file_marker(streamed["text"]).strip()
+            )
             if partial:
                 client.chat_update(
                     channel=channel,
@@ -363,27 +450,49 @@ def _run_and_update(
 
 
 def _handle(agent, event, client, say):
-    """Handle one mention for a FIXED agent (the app this handler belongs to).
+    """Handle one message (mention, threaded follow-up, or 1:1 DM) for a FIXED
+    agent (the app this handler belongs to).
 
     No keyword routing: the prompt is just the de-mentioned message text.
     """
-    if event.get("subtype") or event.get("bot_id"):
-        return  # ignore edits/deletes and the bot's own messages
+    # Ignore edits/deletes and the bot's own messages -- but let "file_share"
+    # through: a user message carrying an upload arrives WITH that subtype, and
+    # rejecting it silently dropped threaded follow-ups that attach a file.
+    subtype = event.get("subtype")
+    if (subtype and subtype != "file_share") or event.get("bot_id"):
+        return
 
     # Idempotency guard: an in-thread mention can be delivered as BOTH an
     # app_mention and a message.* event. Dedup on a stable id so we answer once.
-    # (Cheap and robust; kept even though one app per bot reduces double-firing.)
-    if claude_runner.seen_before(_event_id(event)):
+    # Keyed PER AGENT: the Slack message id is identical across every agent's
+    # delivery of one message, so a bare-id key would let two mentioned agents
+    # race and only one answer.
+    if claude_runner.seen_before(f"{agent['name']}:{_event_id(event)}"):
         return
 
     channel = event["channel"]
-    # Top-level mention -> use its own ts as the thread root, so the whole
-    # conversation in that thread shares one context key.
-    thread_ts = event.get("thread_ts") or event["ts"]
+    # CONVERSATION KEY vs POSTING TARGET. A top-level message in a 1:1 DM
+    # ("im") has no thread; keying it by its own ts would make EVERY DM message
+    # a brand-new conversation, so its key is the DM CHANNEL id instead: ONE
+    # rolling conversation per DM that spans messages and restarts. A threaded
+    # message (inside a DM or anywhere else) keeps the normal per-thread key,
+    # and a top-level mention in a channel/mpim still roots a thread on its own
+    # ts. The key feeds every store/interrupt/workdir lookup; POSTING goes
+    # through _reply_thread_ts(key) via `post` below (in-thread for a ts key,
+    # flat for a channel-id key).
+    flat_dm = event.get("channel_type") == "im" and not event.get("thread_ts")
+    thread_ts = channel if flat_dm else (event.get("thread_ts") or event["ts"])
+
+    def post(text=None, thread_ts=None):
+        """say with the key -> posting-target translation applied. Every ack in
+        this handler (and every control ack, via the say we pass down) supplies
+        the CONVERSATION KEY as thread_ts; a flat-DM key must post flat.
+        """
+        return say(text=text, thread_ts=_reply_thread_ts(thread_ts))
 
     prompt = _clean_prompt(event.get("text", ""))
     if not prompt:
-        say(
+        post(
             text=f"{agent['display_name']} here. What would you like to ask?",
             thread_ts=thread_ts,
         )
@@ -396,7 +505,7 @@ def _handle(agent, event, client, say):
         agent,
         prompt,
         thread_ts,
-        say,
+        post,
         channel_id=channel,
     ):
         return
@@ -409,7 +518,7 @@ def _handle(agent, event, client, say):
     # (handled above, before this guard), so a stuck thread is never wedged.
     token = interrupt.try_register(agent["name"], thread_ts)
     if token is None:
-        say(
+        post(
             text=(
                 f"{agent['display_name']} is still working on an earlier message "
                 "in this thread. Wait for it to finish, or send `!stop` to cancel it."
@@ -422,7 +531,16 @@ def _handle(agent, event, client, say):
     # finally takes over cleanup, any failure here (history fetch, placeholder
     # post) must release the slot, or the thread would wedge as permanently busy.
     try:
-        history = _fetch_thread_history(client, channel, thread_ts, event.get("ts"))
+        # Flat DM: there is no thread to fetch (the key is the channel id, not
+        # a thread root), and the transcript's purpose -- letting OTHER agents
+        # read a Slack-visible exchange in a shared thread -- does not apply in
+        # a 1:1 DM; the rolling per-channel session already carries the DM
+        # context. No conversations.history variant on purpose.
+        history = (
+            ""
+            if flat_dm
+            else _fetch_thread_history(client, channel, thread_ts, event.get("ts"))
+        )
 
         # Inbound attachments: download any files[] on this message with the bot
         # token and append their local paths to the prompt so the CLI agent can
@@ -440,7 +558,7 @@ def _handle(agent, event, client, say):
         # quotes.json) falls back to the default "is thinking..." text.
         quote = quotes.random_quote()
         placeholder_text = quote or f"{agent['display_name']} is thinking..."
-        placeholder = say(text=placeholder_text, thread_ts=thread_ts)
+        placeholder = post(text=placeholder_text, thread_ts=thread_ts)
         placeholder_ts = placeholder["ts"]
 
         worker = threading.Thread(

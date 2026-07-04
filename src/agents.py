@@ -96,6 +96,7 @@ def _load_registry(path):
             f"{type(data).__name__}."
         )
 
+    seen_names = set()
     for i, entry in enumerate(data):
         if not isinstance(entry, dict):
             raise RuntimeError(
@@ -108,6 +109,16 @@ def _load_registry(path):
                 f"agents.json entry #{i} ({entry.get('name', '<no name>')!r}) is "
                 f"missing required key(s): {', '.join(missing)}."
             )
+        # Names must be unique: they key the session/override stores, the token
+        # env vars, and app.py's live handler set, where a duplicate would
+        # silently overwrite the first agent's entry and leak its handler.
+        name = entry["name"]
+        if name in seen_names:
+            raise ValueError(
+                f"agents.json entry #{i} duplicates agent name {name!r}; agent "
+                f"names must be unique."
+            )
+        seen_names.add(name)
     return data
 
 

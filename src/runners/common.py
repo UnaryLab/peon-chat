@@ -6,18 +6,21 @@ update helper (`safe_on_update`), the process-failure error formatter
 (`format_process_failure`), and the two runtime helpers `_stream_enabled` (the
 STREAM_OUTPUT toggle) and `_cwd_from_overrides` (the per-thread workdir cwd). All
 are Slack-agnostic, so this is importable without slack_bolt and is unit-testable.
-The vendor facades (claude_runner / codex_runner) re-export `seen_before` and
-`Interrupt` from here; `_stream_enabled` / `_cwd_from_overrides` reach the facades
-via the claude/codex modules that import them from here.
+The claude_runner facade re-exports `seen_before` and `Interrupt` from here;
+`_stream_enabled` / `_cwd_from_overrides` reach both facades via the claude/codex
+modules that import them from here.
 """
 
 from __future__ import annotations
 
 import collections
+import logging
 import os
 import signal
 import threading
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -38,6 +41,52 @@ def _stream_enabled():
         "no",
         "off",
     )
+
+
+def _int_env(name, default):
+    """Read an int env var, tolerating malformed/empty values.
+
+    A malformed value (e.g. CLAUDE_TIMEOUT_MIN=90m) must not raise at import
+    time and kill the whole process at startup; it logs a warning and falls
+    back to `default`. Missing/empty also falls back (silently).
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("ignoring malformed %s=%r; using default %s", name, raw, default)
+        return default
+
+
+def drain_stderr(proc):
+    """Drain proc.stderr on a daemon thread; return a callable yielding the text.
+
+    A CLI writing more than the OS pipe buffer (~64KB) to a PIPE'd stderr blocks
+    on the write and stops producing stdout, deadlocking a parent that only reads
+    stderr after exit. Draining concurrently keeps the child unblocked while
+    preserving the stderr TEXT for error reporting. The returned zero-arg callable
+    joins the drain (bounded) and returns everything collected so far.
+    """
+    chunks = []
+
+    def _drain():
+        try:
+            chunks.append(proc.stderr.read() or "")
+        except Exception:  # noqa: BLE001 - a broken stderr must not kill the drain
+            pass
+
+    thread = threading.Thread(target=_drain, daemon=True, name="stderr-drain")
+    thread.start()
+
+    def _text():
+        # ponytail: bounded join; a still-open descendant-held stderr fd must not
+        # wedge the error path. Whatever was collected so far is returned.
+        thread.join(timeout=5)
+        return "".join(chunks)
+
+    return _text
 
 
 def _cwd_from_overrides(overrides):
@@ -151,8 +200,10 @@ class Interrupt:
 
     def __init__(self):
         self._requested = threading.Event()
-        # The live Popen, set by the runner once it spawns; Any since we only
-        # duck-type .poll()/.send_signal() (a real Popen at runtime, a fake in tests).
+        self._lock = threading.Lock()
+        # The live Popen, set by the runner (via arm()) once it spawns; Any since we
+        # only duck-type .poll()/.send_signal() (a real Popen at runtime, a fake in
+        # tests). Kept a plain readable attribute (handlers read token.proc).
         self.proc: Any = None
 
     @property
@@ -160,15 +211,53 @@ class Interrupt:
         """True once a user interrupt has been signalled for this run."""
         return self._requested.is_set()
 
+    def arm(self, proc):
+        """Attach the live subprocess, delivering any interrupt that already landed.
+
+        request() and arm() share one lock, so a !stop arriving BEFORE the spawn
+        finished (flag set, proc still None) is delivered here the moment the proc
+        is attached, instead of being acked to the user and silently lost.
+        """
+        with self._lock:
+            self.proc = proc
+            pending = self._requested.is_set()
+        if pending:
+            self._deliver(proc)
+
     def request(self):
         """Signal a user interrupt: set the flag, then SIGINT the live proc."""
-        self._requested.set()
-        proc = self.proc
-        if proc is not None and proc.poll() is None:
-            try:
-                proc.send_signal(signal.SIGINT)
-            except (ProcessLookupError, OSError):
-                pass  # already exited between the poll and the signal
+        with self._lock:
+            self._requested.set()
+            proc = self.proc
+        if proc is not None:
+            self._deliver(proc)
+
+    @staticmethod
+    def _deliver(proc):
+        """Deliver the interrupt to `proc`: SIGINT if alive, else unwedge the reader.
+
+        If the proc already exited but its stdout is still open, a descendant it
+        spawned may have inherited the write fd, so the runner's readline loop never
+        sees EOF and the SIGINT would be skipped forever. Closing our read end
+        unblocks the reader (the streaming loops treat the resulting ValueError/
+        OSError as a cancel when requested is set).
+        """
+        if proc.poll() is None:
+            # getattr-guarded: a minimal test fake without send_signal must not
+            # blow up the settle path (a real Popen always has it).
+            send = getattr(proc, "send_signal", None)
+            if send is not None:
+                try:
+                    send(signal.SIGINT)
+                except (ProcessLookupError, OSError):
+                    pass  # already exited between the poll and the signal
+        else:
+            stdout = getattr(proc, "stdout", None)
+            if stdout is not None and not getattr(stdout, "closed", True):
+                try:
+                    stdout.close()
+                except OSError:
+                    pass
 
 
 def safe_on_update(on_update, text, force=False):

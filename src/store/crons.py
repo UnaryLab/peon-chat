@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import uuid
 
-from .base import _SESSIONS_LOCK, _resolve_path, _sibling_store_path
+from .base import _SESSIONS_LOCK, _atomic_write_json, _resolve_path, _sibling_store_path
 
 
 def _crons_path():
@@ -34,9 +34,8 @@ def _load_crons(path):
 
 
 def _save_crons(crons, path):
-    """Persist the cron list to `path` (pretty, deterministic key order)."""
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(crons, f, indent=2, sort_keys=True)
+    """Persist the cron list to `path` (pretty, deterministic key order, atomic)."""
+    _atomic_write_json(crons, path)
 
 
 def list_crons(path=None):

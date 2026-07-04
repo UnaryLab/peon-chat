@@ -76,8 +76,11 @@ from .slack.files import (  # noqa: F401
 # --- Mention/message handling (src/slack/handlers.py) -----------------------
 from .slack.handlers import (  # noqa: F401
     MENTION_RE,
+    _SLACK_MAX_TEXT_LEN,
     _STREAM_UPDATE_MIN_INTERVAL_S,
     _THREAD_HISTORY_LIMIT,
+    _THREAD_HISTORY_MAX_PAGES,
+    _THREAD_HISTORY_PAGE_LIMIT,
     _append_thread_history,
     _clean_prompt,
     _event_id,
@@ -86,7 +89,9 @@ from .slack.handlers import (  # noqa: F401
     _handle,
     _message_author,
     _make_stream_updater,
+    _reply_thread_ts,
     _run_and_update,
+    _truncate_for_slack,
     _ts_before,
 )
 

@@ -1,10 +1,11 @@
 """Session store (JSON file, keyed on "<agent_name>:<thread_ts>").
 
-Backend-agnostic store access used by the unified session seam (see runners.py
-and app.py). The key is (agent_name, thread_ts) for EVERY backend, so two
-agents in one Slack thread, or one agent across two threads, stay independent.
-This is the single owner of the JSON store + lock; the codex path does not
-touch the store, app.py persists whatever the runner returns via set_session.
+Backend-agnostic store access used by the unified session seam (see
+src/runners/ and app.py). The key is (agent_name, thread_ts) for EVERY backend,
+so two agents in one Slack thread, or one agent across two threads, stay
+independent. The lock and file helpers live in store.base (shared with the
+sibling stores); the runners never touch the store themselves, app.py persists
+whatever id the runner reports via set_session.
 """
 
 from __future__ import annotations
@@ -36,7 +37,8 @@ def get_or_create_session(agent_name, thread_ts, path=None):
     key = _session_key(agent_name, thread_ts)
     # Lock the whole read-modify-write: background worker threads can first-touch
     # the same new key concurrently, and an unlocked path would mint two uuids and
-    # clobber one. The lock is in-process only (see _SESSIONS_LOCK note above).
+    # clobber one. The lock is in-process only (see the _SESSIONS_LOCK note in
+    # store.base).
     with _SESSIONS_LOCK:
         sessions = _load_dict_store(path)
         existing = sessions.get(key)

@@ -10,8 +10,9 @@ import json
 import os
 from unittest import mock
 
-# Project root (parent of tests/), for the few tests that spawn the CLI as a
-# subprocess; conftest.py also puts this on sys.path for imports.
+# Project root (parent of tests/), for the few tests that spawn a fresh python
+# subprocess (import-order/.env checks) or assert paths relative to the repo;
+# conftest.py also puts this on sys.path for imports.
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 try:
@@ -215,6 +216,27 @@ class _FakeSay:
 
 # The full aristotle entry plus a model/effort the !model/!effort/!reset tests read.
 _CONTROL_AGENT = {**_FILE_AGENT, "model": "claude-opus-4-8[1m]", "effort": "xhigh"}
+
+
+class _FakeBoltApp:
+    """Local stand-in for slack_bolt.App: records event handlers, fake client.
+
+    Shared by the listener-routing tests (test_slack_bugfixes, test_dm): patch
+    src.slack.app.App with this, call build_app_for, then invoke the captured
+    listeners (events["message"] / events["app_mention"]) directly.
+    """
+
+    def __init__(self, token):
+        self.client = mock.Mock()
+        self.client.auth_test.return_value = {"user_id": "UBRUNEL"}
+        self.events = {}
+
+    def event(self, name):
+        def _decorator(fn):
+            self.events[name] = fn
+            return fn
+
+        return _decorator
 
 
 class _FakeClient:

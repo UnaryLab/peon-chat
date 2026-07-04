@@ -12,10 +12,11 @@ from tests.helpers import (
 
 # ---------------------------------------------------------------------------
 # CRON SCHEDULING (Slack-native). The store (crons.json, sibling of sessions.json)
-# CRUD lives in claude_runner; the 5-field cron-match logic + the scheduler tick
-# live in app.py. All time-based tests INJECT a datetime/clock (no sleep, no real
-# wall-clock). Note: Claude Code has its own /schedule (cloud routines); this is
-# the in-process Slack-native equivalent the user asked for.
+# CRUD lives in src/store/crons.py (reached via the claude_runner facade); the
+# 5-field cron matcher + the scheduler tick live in src/slack/scheduler.py
+# (reached via the app facade). All time-based tests INJECT a datetime/clock (no
+# sleep, no real wall-clock). Note: Claude Code has its own /schedule (cloud
+# routines); this is the in-process Slack-native equivalent the user asked for.
 # ---------------------------------------------------------------------------
 
 
@@ -284,21 +285,28 @@ def test_scheduler_tick_fires_matching_cron_via_run_seam(monkeypatch, tmp_path):
         "0 0 * * *", "aristotle", "C9", "T9", "later", cron_id="nomatch", path=crons
     )
 
-    fired = []
-    monkeypatch.setattr(
-        _appmod,
-        "_fire_cron",
-        lambda entry, live: fired.append(entry["id"]),
-    )
+    import threading as _threading
 
+    fired = []
+    fired_evt = _threading.Event()
+
+    def _fake_fire(entry, live):
+        fired.append(entry["id"])
+        fired_evt.set()
+
+    monkeypatch.setattr(_appmod, "_fire_cron", _fake_fire)
+
+    # The tick fires each match on its OWN daemon thread (so one long cron run
+    # can't block the loop); wait on the event before asserting the fire landed.
     n = _appmod._scheduler_tick({}, now=datetime(2026, 6, 24, 9, 30))
-    assert fired == ["f1"]
     assert n == 1
+    assert fired_evt.wait(timeout=5)
+    assert fired == ["f1"]
     # A non-matching minute fires nothing.
     fired.clear()
     n2 = _appmod._scheduler_tick({}, now=datetime(2026, 6, 24, 9, 31))
-    assert fired == []
     assert n2 == 0
+    assert fired == []
 
 
 def test_fire_cron_runs_agent_in_target_thread(monkeypatch, tmp_path):
@@ -313,7 +321,9 @@ def test_fire_cron_runs_agent_in_target_thread(monkeypatch, tmp_path):
         "schedule": "* * * * *",
         "agent": "aristotle",
         "channel": "C9",
-        "thread_ts": "T9",
+        # A REAL ts-shaped key: the placeholder posts into that thread (a
+        # flat-DM channel-id key posts flat; see test_dm.py).
+        "thread_ts": "9000000000.000900",
         "prompt": "do the thing",
         "enabled": True,
     }
@@ -349,10 +359,10 @@ def test_fire_cron_runs_agent_in_target_thread(monkeypatch, tmp_path):
     _appmod._fire_cron(entry, live)
 
     assert captured["placeholder"]["channel"] == "C9"
-    assert captured["placeholder"]["thread_ts"] == "T9"
+    assert captured["placeholder"]["thread_ts"] == "9000000000.000900"
     run = captured["run"]
     assert run["channel"] == "C9"
-    assert run["thread_ts"] == "T9"
+    assert run["thread_ts"] == "9000000000.000900"
     assert run["placeholder_ts"] == "ph-ts"
     assert run["agent_name"] == "aristotle"
     assert run["prompt"] == "do the thing"

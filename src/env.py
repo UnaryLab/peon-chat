@@ -4,10 +4,11 @@
 This is the single seam both entrypoints use:
 
   - src/__main__.py calls load_env() as its very first executable code, before
-    any module that reads env at import time (notably runners.claude_runner,
-    which resolves the session-store path from os.environ). Loading here, first
-    and with override=True, makes a SESSIONS_PATH (or the *_TIMEOUT_MIN
-    timeouts, ...) set in .env beat both the shell and the import-time defaults.
+    any module that reads env at import time (notably the runners'
+    *_TIMEOUT_MIN defaults; the store paths are read live per access). Loading
+    here, first and with override=True, makes a value set in .env (a
+    *_TIMEOUT_MIN, SESSIONS_PATH, ...) beat both the shell and the import-time
+    defaults.
 
   - src/app.main() calls it too, so running app directly is self-sufficient.
     The reload is idempotent (override=True re-applies the same values).

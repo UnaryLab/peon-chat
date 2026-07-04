@@ -16,9 +16,9 @@ installed (and `python -m src manifest <name>` needs no tokens or network).
 import json
 from pathlib import Path
 
-# Bot OAuth scopes. app_mentions
-# + chat:write to read mentions and reply; the *:history scopes so the bot can
-# read threaded replies it should continue. files:read + files:write back the
+# Bot OAuth scopes. app_mentions:read + chat:write to read mentions and reply;
+# the *:history scopes so the bot can read threaded replies it should continue.
+# files:read + files:write back the
 # attachment feature: files:read to download inbound files via url_private,
 # files:write to upload files the agent produces back into the thread. Adding
 # these scopes requires the operator to reinstall/refresh each Slack app from the
@@ -29,6 +29,7 @@ _BOT_SCOPES = [
     "channels:history",
     "groups:history",
     "im:history",
+    "mpim:history",
     "files:read",
     "files:write",
 ]
@@ -40,6 +41,7 @@ _BOT_EVENTS = [
     "message.channels",
     "message.groups",
     "message.im",
+    "message.mpim",
 ]
 
 

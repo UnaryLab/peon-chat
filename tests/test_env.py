@@ -10,7 +10,7 @@ from tests.helpers import _PROJECT_ROOT
 
 # ---------------------------------------------------------------------------
 # Authoritative .env loading (src/env.py): .env overrides the shell, including
-# SESSIONS_PATH which the claude runner resolves at import time / store access.
+# SESSIONS_PATH, which the stores resolve live at each access.
 # ---------------------------------------------------------------------------
 
 
