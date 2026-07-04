@@ -258,8 +258,8 @@ def _reload_loop(live, *, _once=False):
 
 
 def main():
-    # Load .env (if present) so the per-agent token vars + CLAUDE_*/CODEX_* are
-    # available. AUTHORITATIVE: override=True makes .env beat shell-exported vars.
+    # Load .env (if present) so the per-agent token vars + AGENT_TIMEOUT_MIN etc.
+    # are available. AUTHORITATIVE: override=True makes .env beat shell-exported vars.
     # Done here, not at import, so importing this module stays side-effect-free.
     # When launched via `python -m src`, __main__ has already loaded .env first
     # (so SESSIONS_PATH etc. are in effect before claude_runner imports); this

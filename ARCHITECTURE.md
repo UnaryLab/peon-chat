@@ -148,16 +148,16 @@ appears in every argv; if an entry omitted `model`, code falls back to that same
 pin (and logs a warning). Reasoning effort is the entry's `effort` field (accepted
 values `low`, `medium`, `high`, `xhigh`, `max`), which adds `--effort <level>`
 after `--model`; an absent/empty `effort` means no flag (the CLI default), but
-every shipped entry sets one (Aristotle `xhigh`; Brunel and Cicero `high`), so
+every shipped entry sets one (`high` on all four shipped agents), so
 the shipped argv always carries `--effort`. To change either, edit that agent's
 `agents.json` entry (e.g. `"effort": "high"` or `"model": "claude-sonnet-4-6"`);
 there is no env-var override:
 
 ```
 # Aristotle, new thread:
-claude -p --output-format json --session-id <uuid> --agent unarylab-research:research_manager --permission-mode bypassPermissions --model claude-opus-4-8[1m] --effort xhigh "<prompt>"
+claude -p --output-format json --session-id <uuid> --agent unarylab-research:research_manager --permission-mode bypassPermissions --model claude-opus-4-8[1m] --effort high "<prompt>"
 # Aristotle, continuing the same thread:
-claude -p --output-format json --resume <uuid> --agent unarylab-research:research_manager --permission-mode bypassPermissions --model claude-opus-4-8[1m] --effort xhigh "<prompt>"
+claude -p --output-format json --resume <uuid> --agent unarylab-research:research_manager --permission-mode bypassPermissions --model claude-opus-4-8[1m] --effort high "<prompt>"
 
 # Brunel, new / resume (same shape, different agent):
 claude -p --output-format json --session-id <uuid> --agent unarylab-research:project_manager --permission-mode bypassPermissions --model claude-opus-4-8[1m] --effort high "<prompt>"

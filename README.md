@@ -199,8 +199,10 @@ the host machine (any path, any command) with no approval step. This is delibera
 for a personal/lab deployment; restrict who can reach the bots accordingly. Each
 thread runs in its own per-thread workdir (default `~/Projects/.peon-workdirs`, set
 `WORKDIR_BASE` to override) as the run's cwd, so files it produces are uploaded
-back into the thread. The live knobs (`SHOW_USAGE`, `STREAM_OUTPUT`,
-`WORKDIR_BASE`) are set in `.env`; see `.env.example`.
+back into the thread. `WORKDIR_BASE` is set in `.env` (see `.env.example`);
+`SHOW_USAGE` and `STREAM_OUTPUT` are code-level toggles that default ON and are
+not listed in `.env.example` (add either to `.env`, set to `0`, only to disable
+it).
 
 **What triggers a response:**
 

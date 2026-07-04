@@ -327,10 +327,9 @@ def _run_and_update(
         prior = store.get_session(agent["name"], thread_ts)
         # Identity: agents carry no built-in name, so without this they can
         # misidentify (e.g. read a stray CLAUDE.md they can reach and answer as
-        # the first agent listed there, Aristotle). Prepend a one-line identity to
-        # EVERY message: a fresh thread learns its name, and a thread that already
-        # learned the wrong one (created before this fix) is corrected on its next
-        # turn. Gating on `prior is None` left those old threads stuck on Aristotle.
+        # the first agent listed there). Prepend a one-line identity to EVERY
+        # message (not just new threads): a fresh thread learns its name, and a
+        # thread that already learned the wrong one self-corrects on its next turn.
         # ponytail: prompt-prepend, not --append-system-prompt, so ONE seam covers
         # both backends without touching the load-bearing per-runner argv.
         prompt = (

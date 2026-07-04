@@ -1,8 +1,8 @@
 """Vendor-neutral persistence foundation: paths, the shared lock, and the
-dict-store load/save plus the composite key.
+dict-/list-store load/save plus the composite key.
 
-Single source of truth for the store layout: every backend-agnostic store
-(sessions, overrides, crons) anchors here. The JSON stores all live beside
+Single source of truth for the store layout: every backend-agnostic JSON store
+(sessions, overrides, crons, jobs) anchors here. The JSON stores all live beside
 sessions.json (see _sibling_store_path), so SESSIONS_PATH redirects all of them
 at once with no extra env var. Nothing here imports slack_bolt or any runner, so
 the stores stay importable/testable without Slack and without a backend.

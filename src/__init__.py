@@ -4,8 +4,8 @@ Importing this package has NO side effects and needs NO tokens or network.
 Module layout:
   - agents.py   the registry (single source of truth) + token helpers
   - runners/    the backend runners (claude/codex) behind the unified answer() seam
-  - store/      vendor-neutral persistence (sessions, overrides, crons, workdir)
-  - slack/      the Slack layer (Bolt app build, handlers, control phrases, cron)
+  - store/      vendor-neutral persistence (sessions, overrides, crons, jobs, workdir)
+  - slack/      the Slack layer (Bolt app build, handlers, control phrases, cron, jobs)
   - app.py      thin facade re-exporting the slack/ surface (the test patch targets)
   - env.py      authoritative .env loading;  manifest.py: Slack-app manifests
 

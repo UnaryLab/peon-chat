@@ -40,8 +40,9 @@ from .claude import (  # noqa: F401
 # Cross-vendor idempotency dedup + the run-cancel interrupt token.
 from .common import Interrupt, seen_before  # noqa: F401
 
-# Vendor-neutral persistence stores live in src/store/ (sessions, overrides,
-# crons, workdir all anchored on store.base). They are re-exported here so the
+# Vendor-neutral persistence stores live in src/store/ (the sessions, overrides,
+# crons, and jobs JSON stores anchored on store.base, plus the path-only
+# workdir scheme). They are re-exported here so the
 # runner's public surface (and the test suite's claude_runner.<name> references)
 # keep resolving unchanged.
 from src.store.base import (  # noqa: F401
