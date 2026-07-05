@@ -149,20 +149,32 @@ Each agent is its own Slack bot that you address by name.
 7. **See usage.** Each reply ends with a small one-line footer (context %,
    tokens, cost, duration) unless the operator disabled `SHOW_USAGE` (default
    on); fields that a backend does not report are omitted.
-8. **Run background jobs.** Ask an agent explicitly for long-running or
-   background work (a sweep, a big build, a long download) and it can end its
-   reply with a `<<job: ...>>` marker naming one shell command. The command is
-   started detached in the thread's workdir (it keeps running even if peon
-   restarts), and when it finishes the agent posts a follow-up in the same
-   conversation summarizing the exit code and the output tail (the raw log tail
-   is posted directly if the agent is mid-run at that moment). Like the files
-   marker, only a marker at the very end of the reply counts, and an ordinary
-   reply never starts one. `!job list` / `!job kill <id>` (see the control
-   phrases below) show or terminate that agent's running jobs. Two guardrails
-   (both configurable in `.env`, `0` disables either): a job is killed after
+8. **Run background work.** Ask an agent explicitly for long-running or
+   background work and it can end its reply with one of two markers. For a
+   long TASK (a survey, research, a build to interpret) it prefers
+   `<<spawn: ...>>`, which starts a detached subagent run of the same
+   agent from a self-contained task prompt. A claude-backed agent's subagent
+   INHERITS the whole conversation (it forks the thread's session; the
+   original is untouched); a codex-backed agent's subagent starts fresh and
+   peon prepends the thread's recent Slack transcript to the spawn prompt,
+   capped, so it has the conversation to refer to even when the prompt is
+   terse (a flat 1:1 DM or a scheduled run has no transcript and the task
+   goes alone). For a
+   verbatim shell command you
+   want run as-is (a sweep, a big build, a long download) it uses
+   `<<job: ...>>` naming one shell command. Either way the work is started
+   detached in the thread's workdir (it keeps running even if peon restarts),
+   and when it finishes the agent posts a follow-up in the same conversation
+   summarizing the result (a spawn's final answer, or a job's exit code and
+   output tail; the raw note is posted directly if the agent is mid-run at
+   that moment). Like the files marker, only a marker at the very end of the
+   reply counts, and an ordinary reply never starts one. `!job list` /
+   `!job kill <id>` (see the control phrases below) show or terminate that
+   agent's running jobs and spawns. Two guardrails (both configurable in
+   `.env`, `0` disables either): a job or spawn is killed after
    `AGENT_TIMEOUT_MIN` minutes (the same knob that bounds a live CLI run;
-   default 2880) and its result delivered with a
-   "timed out" label, and at most `JOB_MAX_CONCURRENT` jobs (default 16, global
+   default 2880) and its result delivered with a "timed out" label, and at
+   most `JOB_MAX_CONCURRENT` jobs and spawns combined (default 16, global
    across all agents) run at once; an over-limit request is declined with a
    note, never queued.
 
@@ -183,8 +195,8 @@ Shift+Enter):
 | `!cron add "<min hour dom month dow>" <prompt>` | Schedule a recurring run of `<prompt>` in this thread. |
 | `!cron list` | List scheduled crons. |
 | `!cron remove <id>` / `!cron on <id>` / `!cron off <id>` | Delete / enable / disable a cron by id. |
-| `!job list` | List THIS agent's background jobs across all conversations (id, conversation, pid, command). |
-| `!job kill <id>` | Terminate one of this agent's jobs (SIGTERM to its whole process group). The result still arrives via the normal job-completion follow-up; another agent's job id reads as "no such job". |
+| `!job list` | List THIS agent's background jobs and spawns across all conversations (id, conversation, pid, command or `spawn:` task). |
+| `!job kill <id>` | Terminate one of this agent's jobs or spawns (SIGTERM to its whole process group). The result still arrives via the normal job-completion follow-up; another agent's job id reads as "no such job". |
 
 **One run per thread.** While an agent is still working in a thread, a new
 message to it in that thread is declined with a short "still working" note:

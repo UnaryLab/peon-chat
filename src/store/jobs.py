@@ -40,13 +40,27 @@ def list_jobs(path=None):
 
 
 def add_job(
-    agent, channel, thread_ts, pid, logfile, cmd, job_id, path=None, limit=None
+    agent,
+    channel,
+    thread_ts,
+    pid,
+    logfile,
+    cmd,
+    job_id,
+    path=None,
+    limit=None,
+    extra=None,
 ):
     """Append a new job entry and return it (read-modify-write under the lock).
 
     `job_id` is required: the spawner mints it up front for the logfile name, so
     the two always agree. `started_ts` (epoch seconds) is stamped here, the one
     place an entry is born; the timeout watcher enforces its window from it.
+
+    `extra` (default None) is a dict of additional fields merged into the entry:
+    a background SUBAGENT spawn adds its discriminator (`kind: "spawn"`) and the
+    codex lastmsg path here. None adds nothing, so a legacy job entry's shape is
+    unchanged (and the loaders tolerate entries without these fields).
 
     `limit` is the GLOBAL concurrency guard: when set, the count-check and the
     append happen in ONE critical section under the shared store lock, so a
@@ -66,6 +80,8 @@ def add_job(
         "cmd": cmd,
         "started_ts": time.time(),
     }
+    if extra:
+        entry.update(extra)
     with _SESSIONS_LOCK:
         jobs = _load_list_store(path)
         if limit is not None and len(jobs) >= limit:

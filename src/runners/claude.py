@@ -93,7 +93,13 @@ def _is_dead_session_error(exc):
 
 
 def build_command(
-    agent, prompt, session_id, is_new_session, overrides=None, stream=False
+    agent,
+    prompt,
+    session_id,
+    is_new_session,
+    overrides=None,
+    stream=False,
+    fork_session=False,
 ):
     """Build the argv list for one headless claude run.
 
@@ -103,6 +109,15 @@ def build_command(
                             "--include-partial-messages", "--verbose"]
       new session:        + ["--session-id", session_id]
       resume session:     + ["--resume", session_id]
+      forked resume:      + ["--resume", session_id, "--fork-session"]
+                            (fork_session=True, resume only; verified against
+                            claude CLI 2.1.201: "When resuming, create a new
+                            session ID instead of reusing the original", i.e.
+                            the run inherits the session's full state but
+                            writes to a NEW id the CLI mints, the original is
+                            untouched. Used ONLY by the <<spawn:>> subagent
+                            path; normal runs never pass it, so the default
+                            argv is byte-identical.)
       named agent:        + ["--agent", agent["claude_agent"]]  (None => omit)
       full access:        + ["--permission-mode", "bypassPermissions"]  (always,
                             unconditional: access is hardcoded-full, no confinement)
@@ -157,6 +172,8 @@ def build_command(
         argv += ["--session-id", session_id]
     else:
         argv += ["--resume", session_id]
+        if fork_session:
+            argv += ["--fork-session"]
 
     if agent.get("claude_agent") is not None:
         argv += ["--agent", agent["claude_agent"]]

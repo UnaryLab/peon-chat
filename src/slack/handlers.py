@@ -227,13 +227,15 @@ def _make_stream_updater(client, channel, placeholder_ts, now=None):
 
     def _update(text, force=False):
         nonlocal last_post, last_text
-        # Scrub any (possibly partial) trailing <<job: ...>> / <<files: ...>>
-        # marker so neither flashes mid-stream (job first: it is the trailing-most
-        # in the combined order); the final update strips them for real via the
-        # parse helpers. Then cap the partial so a long stream never trips
-        # Slack's msg_too_long.
+        # Scrub any (possibly partial) trailing <<spawn: ...>> / <<job: ...>> /
+        # <<files: ...>> marker so none flashes mid-stream (spawn first: it is
+        # the trailing-most in the combined order); the final update strips
+        # them for real via the parse helpers. Then cap the partial so a long
+        # stream never trips Slack's msg_too_long.
         text = _truncate_for_slack(
-            files._strip_file_marker(jobs._strip_job_marker(text))
+            files._strip_file_marker(
+                jobs._strip_job_marker(jobs._strip_spawn_marker(text))
+            )
         )
         # Skip empties (Slack rejects them) and no-op re-posts (a force-flush on a
         # tool_use block_stop carries the SAME text as the text block before it).
@@ -263,7 +265,7 @@ def _make_stream_updater(client, channel, placeholder_ts, now=None):
 
 
 def _run_and_update(
-    client, channel, placeholder_ts, agent, prompt, thread_ts, token=None
+    client, channel, placeholder_ts, agent, prompt, thread_ts, token=None, history=""
 ):
     """Background worker: resolve session, run the agent's backend, edit the placeholder.
 
@@ -295,6 +297,12 @@ def _run_and_update(
     with a `<<job: cmd>>` marker (stripped the same way; parsed BEFORE the files
     marker, see below); the command is spawned detached after the final reply
     posts and its completion is delivered back later (see src/slack/jobs.py).
+
+    `history` is the turn's Slack-visible thread transcript (already fetched by
+    _handle; "" from callers without one -- cron fires, completion deliveries,
+    flat DMs). It is prepended to a spawn task prompt via
+    jobs._compose_spawn_prompt so the fresh-session subagent has the
+    conversation to refer to; never re-fetched here.
     """
     # Register a cancel token so a "!stop" in this thread can SIGINT the run; the
     # finally below always drops it. See src.slack.interrupt / common.Interrupt.
@@ -338,23 +346,36 @@ def _run_and_update(
             "This run is a single non-interactive turn: the process exits as soon "
             "as your reply is complete, so any subagent or task you start in the "
             "BACKGROUND (e.g. run_in_background) is killed before it finishes and "
-            "its work is lost. Do all long or multi-step work (surveys, research, "
-            "builds) synchronously in the FOREGROUND within this turn; it is fine "
-            "for the reply to take a while. The ONE sanctioned exception is the "
-            "background-job marker described below.\n\n"
+            "its work is lost. Quick work: answer in the FOREGROUND within this "
+            "turn; it is fine for the reply to take a while. For genuinely "
+            "long-running work the two trailing markers described below are the "
+            "only sanctioned escape hatches.\n\n"
             "If -- and only if -- the user explicitly asks you to produce, send, "
             "attach, or share a file, end your reply with a line "
             "`<<files: name1, name2>>` naming the files (paths in your working "
             "directory) to deliver. Otherwise never write that marker and no "
             "files are sent.\n\n"
-            "If -- and only if -- the user explicitly asks for long-running or "
-            "background work, you may end your reply with a line "
-            "`<<job: your shell command>>` naming ONE shell command; the marker "
-            "must sit on its own line at the very end of the reply. After your "
-            "reply posts it is spawned DETACHED in your working directory, keeps "
-            "running after this turn ends, and its exit code and output tail are "
-            "delivered back to this conversation automatically when it finishes. "
-            "Otherwise never write that marker.\n\n"
+            "For a long-running TASK (multi-step work needing intelligence: "
+            "research, a build whose output needs interpreting, anything beyond "
+            "a few minutes), PREFER ending your reply with a line "
+            "`<<spawn: your full task prompt>>` plus a short acknowledgement. "
+            "The task runs DETACHED as a one-shot subagent that MAY not see "
+            "this conversation's context, so still write the task prompt as a "
+            "COMPLETE BRIEF for a reader with zero context: restate the goal "
+            "and all parameters, file paths, and decisions from the "
+            "conversation; never reference 'above', 'as discussed', or this "
+            "thread. Its final answer is delivered back to this conversation "
+            "automatically when it finishes.\n\n"
+            "For a long-running VERBATIM shell command the user wants run as-is, "
+            "end your reply with a line `<<job: your shell command>>` naming ONE "
+            "shell command. After your reply posts it is spawned DETACHED in "
+            "your working directory, keeps running after this turn ends, and "
+            "its exit code and output tail are delivered back automatically "
+            "when it finishes.\n\n"
+            "Each of these markers must sit on its own line at the very end of "
+            "the reply; emit one only when the work is genuinely long-running "
+            "or the user explicitly asks for background work. Otherwise never "
+            "write these markers.\n\n"
             f"{prompt}"
         )
         overrides = store.get_override(agent["name"], thread_ts)
@@ -392,14 +413,29 @@ def _run_and_update(
         store.set_session(agent["name"], thread_ts, session_id)
         # Split off the trailing delivery markers BEFORE the truncation cap and
         # the interrupt notice / usage footer, so they are gone from the posted
-        # reply and drive the outbound upload / job spawn below. Deterministic
-        # order: the JOB marker is parsed FIRST, then the FILES marker, so a
-        # reply ending `...<<files: a>>\n<<job: cmd>>` (files line, then job
-        # line LAST) triggers both; with the lines the other way around the
-        # files strip leaves the job marker mid-text, i.e. plain prose (the
-        # trailing-only rule).
+        # reply and drive the outbound upload / job / subagent spawn below.
+        # Deterministic order: the SPAWN marker is parsed FIRST, then the JOB
+        # marker, then the FILES marker, so a reply ending
+        # `...<<files: a>>\n<<job: cmd>>\n<<spawn: task>>` (spawn line LAST)
+        # triggers all three; a marker line out of that order is left mid-text
+        # by the earlier strips, i.e. plain prose (the trailing-only rule).
+        text, spawn_task = jobs._parse_spawn_marker(text)
         text, job_cmd = jobs._parse_job_marker(text)
         text, upload_names = files._parse_file_marker(text)
+        # Spawn context: a claude spawn with a stored thread session FORKS it
+        # (full hidden context inherited; jobs._spawn_fork_session is the ONE
+        # place that decision lives), so the transcript prepend is redundant
+        # and skipped. Fresh claude spawns and all codex spawns keep it:
+        # deterministically prepend the turn's Slack transcript (when this
+        # caller had one) so even a lazy task prompt has the conversation to
+        # refer to. Composed ONCE here, before the _start_spawn seam; see
+        # jobs._compose_spawn_prompt for the template, the size cap, and why
+        # marker text inside it is inert.
+        if spawn_task:
+            forks = jobs._spawn_fork_session(agent, thread_ts) is not None
+            spawn_task = jobs._compose_spawn_prompt(
+                spawn_task, "" if forks else history
+            )
         # Cap the body BELOW Slack's 40k chat_update limit AFTER the marker split
         # (file delivery survives) and BEFORE the notice/footer appends (they
         # survive too); an over-limit final update would otherwise raise
@@ -421,26 +457,35 @@ def _run_and_update(
         )
         # Outbound files: upload only the files the run named in its marker.
         files._maybe_upload_named(client, channel, thread_ts, agent, upload_names)
-        # Detached background job: opt-in via the trailing <<job: ...>> marker,
-        # spawned AFTER the final reply posts. _start_job is a Kind-B name
-        # (resolved through the app facade). The reply already posted, so a
-        # spawn failure surfaces as a note in the thread, never by clobbering it.
-        # A !stop'ed run never starts its job: the user asked to cancel the work.
-        if job_cmd and not token.requested:
+        # Detached background work: opt-in via the trailing <<job:>> (shell) and
+        # <<spawn:>> (subagent) markers, started AFTER the final reply posts, in
+        # that order. _start_job/_start_spawn are Kind-B names, resolved through
+        # the app facade AT CALL TIME (getattr) so a test's monkeypatch on the
+        # facade is seen. The reply already posted, so a start failure surfaces
+        # as a note in the thread, never by clobbering it. A !stop'ed run never
+        # starts either: the user asked to cancel the work.
+        for noun, body, seam in (
+            ("job", job_cmd, "_start_job"),
+            ("subagent", spawn_task, "_start_spawn"),
+        ):
+            if not body or token.requested:
+                continue
             from src import app as _appfacade
 
             try:
-                _appfacade._start_job(client, agent, channel, thread_ts, job_cmd)
+                getattr(_appfacade, seam)(client, agent, channel, thread_ts, body)
             except Exception:  # noqa: BLE001 - never let a failed spawn destroy the reply
-                logger.exception("failed to start background job for %s", agent["name"])
+                logger.exception(
+                    "failed to start background %s for %s", noun, agent["name"]
+                )
                 try:
                     client.chat_postMessage(
                         channel=channel,
                         thread_ts=_reply_thread_ts(thread_ts),
-                        text=":warning: failed to start the background job.",
+                        text=f":warning: failed to start the background {noun}.",
                     )
                 except Exception:  # noqa: BLE001 - a Slack hiccup must not raise here
-                    logger.warning("failed to post the job-start failure note")
+                    logger.warning("failed to post the %s-start failure note", noun)
     except (claude_runner.ClaudeRunError, codex_runner.CodexRunError) as exc:
         if token.requested:
             # Interrupted during a phase we cannot settle gracefully (e.g. a codex
@@ -464,7 +509,8 @@ def _run_and_update(
             # strip after a mid-text marker mention would permanently eat the
             # prose tail. Only a complete trailing marker is removed; a
             # genuinely incomplete trailing marker may stay visible (error path).
-            partial, _ = jobs._parse_job_marker(streamed["text"])
+            partial, _ = jobs._parse_spawn_marker(streamed["text"])
+            partial, _ = jobs._parse_job_marker(partial)
             partial, _ = files._parse_file_marker(partial)
             partial = _truncate_for_slack(partial.strip())
             if partial:
@@ -612,7 +658,7 @@ def _handle(agent, event, client, say):
         worker = threading.Thread(
             target=_run_and_update,
             args=(client, channel, placeholder_ts, agent, prompt, thread_ts),
-            kwargs={"token": token},
+            kwargs={"token": token, "history": history},
             daemon=True,
         )
         worker.start()

@@ -1,6 +1,7 @@
-"""Background jobs: the trailing `<<job: ...>>` marker, the detached spawn, the
-completion watcher, the restart re-attach, and the `!job` control phrases
-(`_handle_job_command`: list this agent's jobs / SIGTERM a job's process group).
+"""Background jobs and subagent spawns: the trailing `<<job: ...>>` and
+`<<spawn: ...>>` markers, the detached spawn, the completion watcher, the
+restart re-attach, and the `!job` control phrases (`_handle_job_command`: list
+this agent's jobs / SIGTERM a job's process group).
 
 A run opts in to long/background work by ENDING its reply with a
 `<<job: <shell command>>>` marker on its own line (the trailing-only rule of
@@ -23,6 +24,10 @@ retried on the next restart. On startup, _reattach_jobs re-arms a watcher for
 every persisted entry from a previous process lifetime (the exit code is then
 unknown).
 
+The sibling `<<spawn: <task prompt>>>` marker spawns a detached one-shot CLI
+SUBAGENT run riding the same machinery; _start_spawn tells the full spawn story
+(and _finish_job its result delivery).
+
 The command runs fully unsandboxed, like every run in peon (the documented
 security posture); the workdir is its cwd, not a confinement boundary.
 
@@ -42,6 +47,7 @@ singleton, so tests patch app.subprocess.Popen (Kind A).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -51,7 +57,7 @@ import threading
 import time
 import uuid
 
-from src import agents, store
+from src import agents, runners, store
 from src.runners.common import _int_env, agent_timeout_min
 
 from . import interrupt
@@ -82,24 +88,54 @@ logger = logging.getLogger("peon")
 # the parse rejects: a line-start opener whose line runs to the end of the
 # text (complete or partial) is scrubbed, and a multi-line body is scrubbed
 # under the same no-">>"-on-the-opener-line rule as the parse.
-_MARKER_OPENERS = r"<<\s*(?:job|files)\s*:"
-_JOB_SINGLE_LINE_BODY = rf"(?:(?!{_MARKER_OPENERS})[^\n])*"
-_JOB_MULTI_LINE_BODY = (
-    rf"(?:(?!{_MARKER_OPENERS})(?!>>)[^\n])*\n(?:(?!{_MARKER_OPENERS}).)*"
-)
-_JOB_MARKER_RE = re.compile(
-    rf"(?:^|\n)[ \t]*<<\s*job\s*:\s*"
-    rf"({_JOB_SINGLE_LINE_BODY}|{_JOB_MULTI_LINE_BODY})>>\s*$",
-    re.IGNORECASE | re.DOTALL,
-)
-_JOB_MARKER_STRIP_RE = re.compile(
-    rf"\s*(?:^|\n)[ \t]*<<\s*job\s*:"
-    rf"(?:{_JOB_SINGLE_LINE_BODY}\s*\Z|{_JOB_MULTI_LINE_BODY}$)",
-    re.IGNORECASE | re.DOTALL,
-)
+_MARKER_OPENERS = r"<<\s*(?:job|files|spawn)\s*:"
+
+
+def _greedy_marker_res(keyword):
+    """Compile the greedy (parse, strip) regex pair for `<<keyword: ...>>`.
+
+    Shared by the JOB and SPAWN markers (both bodies may carry ">>", under the
+    opener-line rule above); the FILES pair keeps its tempered helper in
+    files.py. The body may not contain another marker opener (job, files, or
+    spawn), so a trailing sibling marker after a mid-text mention is never
+    swallowed.
+    """
+    single_line_body = rf"(?:(?!{_MARKER_OPENERS})[^\n])*"
+    multi_line_body = (
+        rf"(?:(?!{_MARKER_OPENERS})(?!>>)[^\n])*\n(?:(?!{_MARKER_OPENERS}).)*"
+    )
+    parse = re.compile(
+        rf"(?:^|\n)[ \t]*<<\s*{keyword}\s*:\s*"
+        rf"({single_line_body}|{multi_line_body})>>\s*$",
+        re.IGNORECASE | re.DOTALL,
+    )
+    strip = re.compile(
+        rf"\s*(?:^|\n)[ \t]*<<\s*{keyword}\s*:"
+        rf"(?:{single_line_body}\s*\Z|{multi_line_body}$)",
+        re.IGNORECASE | re.DOTALL,
+    )
+    return parse, strip
+
+
+_JOB_MARKER_RE, _JOB_MARKER_STRIP_RE = _greedy_marker_res("job")
+# The sibling `<<spawn: <task prompt>>>` marker: same anchoring discipline, but
+# the body is a natural-language task for a detached one-shot CLI subagent run
+# (see _start_spawn), not shell.
+_SPAWN_MARKER_RE, _SPAWN_MARKER_STRIP_RE = _greedy_marker_res("spawn")
 
 # How much of the END of the job log is delivered back into the thread.
 _JOB_LOG_TAIL_CHARS = 4000
+
+# Cap on a SPAWN's extracted final message where it feeds the completion note
+# (head+tail so both ends of a long report survive): the plain-note path must
+# stay under Slack's ~40k post limit, and the delivery prompt rides the CLI
+# argv, so an unbounded result risks ARG_MAX.
+_SPAWN_RESULT_MAX_CHARS = 8000
+
+# Cap on the Slack transcript prepended to a SPAWN's task prompt by
+# _compose_spawn_prompt (the prompt rides the CLI argv, so it must stay
+# bounded); over the cap the NEWEST end (tail) is kept behind a truncation note.
+_SPAWN_TRANSCRIPT_MAX_CHARS = 16000
 
 # Seconds between pid polls for a RE-ATTACHED watcher (no Popen handle after a
 # restart, so liveness is probed instead of waited on).
@@ -119,18 +155,11 @@ _JOB_KILL_GRACE_S = 5
 _JOB_MAX_CONCURRENT_DEFAULT = 16
 
 
-def _strip_job_marker(text):
-    """Remove a TRAILING `<<job: ...>>` marker (complete or partial) from text."""
-    if not text:
-        return text
-    return _JOB_MARKER_STRIP_RE.sub("", text)
-
-
-def _parse_job_marker(text):
-    """Split text into (clean_text, cmd): cmd from the TRAILING complete marker.
+def _parse_trailing(regex, text):
+    """Split text into (clean_text, body): body from the TRAILING complete marker.
 
     No trailing COMPLETE marker -> (text, None) unchanged; the opener must
-    start a line (see _JOB_MARKER_RE), so a mid-text or mid-line marker
+    start a line (see _greedy_marker_res), so a mid-text or mid-line marker
     mention is plain prose and triggers nothing. Unlike the files marker the
     body may contain ">>", under the opener-line rule: an opener line that
     contains ">>" must be a single-line marker closing at the very end of the
@@ -141,11 +170,88 @@ def _parse_job_marker(text):
     """
     if not text:
         return text, None
-    match = _JOB_MARKER_RE.search(text)
+    match = regex.search(text)
     if match is None:
         return text, None
-    cmd = match.group(1).strip()
-    return text[: match.start()].rstrip(), (cmd or None)
+    body = match.group(1).strip()
+    return text[: match.start()].rstrip(), (body or None)
+
+
+def _strip_trailing(regex, text):
+    """Remove a TRAILING marker (complete or partial) from text."""
+    if not text:
+        return text
+    return regex.sub("", text)
+
+
+def _strip_job_marker(text):
+    """Remove a TRAILING `<<job: ...>>` marker (complete or partial) from text."""
+    return _strip_trailing(_JOB_MARKER_STRIP_RE, text)
+
+
+def _parse_job_marker(text):
+    """Split text into (clean_text, cmd): cmd from the TRAILING complete marker."""
+    return _parse_trailing(_JOB_MARKER_RE, text)
+
+
+def _strip_spawn_marker(text):
+    """Remove a TRAILING `<<spawn: ...>>` marker (complete or partial) from text."""
+    return _strip_trailing(_SPAWN_MARKER_STRIP_RE, text)
+
+
+def _parse_spawn_marker(text):
+    """Split text into (clean_text, task): the spawn analog of _parse_job_marker
+    (the body is the subagent's task prompt, not shell)."""
+    return _parse_trailing(_SPAWN_MARKER_RE, text)
+
+
+def _compose_spawn_prompt(task, transcript):
+    """Prepend the dispatching turn's Slack transcript to a spawn task prompt.
+
+    The subagent runs with a FRESH session and no thread access, so peon
+    deterministically hands it the transcript the turn already fetched (never
+    re-fetched): even a lazy task prompt ("run the comparison discussed
+    above") has the conversation to refer to. Plain prompt text, identical
+    for both backends, and the transcript sits MID-PROMPT, so marker-like
+    text inside it is mechanically inert (prompts are never marker-parsed).
+    No transcript (flat DM, cron fire, completion delivery) -> the task body
+    alone. Over _SPAWN_TRANSCRIPT_MAX_CHARS the NEWEST tail is kept behind a
+    truncation note. The single source of truth for the composition template.
+    """
+    if not transcript:
+        return task
+    if len(transcript) > _SPAWN_TRANSCRIPT_MAX_CHARS:
+        transcript = (
+            "[transcript truncated: newest part kept]\n"
+            + transcript[-_SPAWN_TRANSCRIPT_MAX_CHARS:]
+        )
+    return (
+        "Recent conversation for context (Slack thread transcript):\n"
+        f"{transcript}\n\nYour task:\n{task}"
+    )
+
+
+def _spawn_fork_session(agent, thread_ts):
+    """The stored thread session id a claude spawn FORKS, or None (fresh spawn).
+
+    The ONE place the fork-vs-fresh decision lives: _run_and_update consults it
+    to SKIP the transcript prepend (a fork already carries the conversation),
+    and _start_spawn consults it to build the fork argv. Claude-only:
+    `--fork-session` (verified against claude CLI 2.1.201) resumes the thread's
+    session but writes to a NEW id the CLI mints, so the subagent inherits the
+    full hidden conversation state while the thread's stored id is never
+    mutated (and the forked id is never persisted). Safe by construction: the
+    spawn launches only AFTER the dispatching run finished and its reply
+    posted, so the fork resumes a quiescent session (one accepted window: the
+    busy slot frees right after the detached Popen, so a fast next message can
+    --resume the same id while the fork's startup read is in flight; the fork
+    never mutates the original, it just may not see that concurrent turn).
+    Codex has no fork analog -> None (fresh run + transcript prepend,
+    unchanged).
+    """
+    if agent.get("backend", "claude") != "claude":
+        return None
+    return store.get_session(agent["name"], thread_ts) or None
 
 
 def _read_log_tail(logfile):
@@ -205,33 +311,93 @@ def _signal_group(pid, sig):
 def _start_job(client, agent, channel, thread_ts, cmd):
     """Spawn `cmd` detached in the thread workdir, persist it, and arm a watcher.
 
-    Called by the worker AFTER the final reply posts. The process gets its own
-    session (start_new_session=True) so it is not killed when the turn's CLI
-    exits; stdin is /dev/null and stdout+stderr are written to job-<id>.log
-    inside the workdir. Returns the persisted store entry. Failures raise; the
-    caller guards (the reply already posted, so a spawn failure must not destroy
-    it). If persisting/arming fails AFTER the spawn, the process is killed
-    (best-effort) so no untracked orphan runs while the user is told it failed.
+    Called by the worker AFTER the final reply posts. See _launch_detached for
+    the shared spawn/persist/watch/decline mechanics.
+    """
+    workdir = store.get_workdir(agent["name"], thread_ts, create=True)
+    job_id = uuid.uuid4().hex[:8]
+    return _launch_detached(
+        client, agent, channel, thread_ts, workdir, job_id, ["/bin/sh", "-c", cmd], cmd
+    )
+
+
+def _start_spawn(client, agent, channel, thread_ts, task):
+    """Spawn `task` as a detached one-shot CLI SUBAGENT run; ride the job machinery.
+
+    Builds a one-shot argv through the dispatching agent's own backend runner
+    (claude with a stored thread session: a --resume <thread id> --fork-session
+    FORK, full hidden context inherited, writing to a NEW CLI-minted id that is
+    NEVER stored in sessions.json, the thread's id untouched -- see
+    _spawn_fork_session; claude without one: fresh with a minted --session-id
+    uuid, equally ephemeral; codex: the verified fresh `codex exec` shape, with
+    the -o lastmsg file placed in the workdir so completion can recover the
+    final message after a restart). Per-thread model/effort overrides apply
+    like a normal run (threaded into build_command). The jobs.json entry carries the
+    `kind: "spawn"` discriminator (and `lastmsg` for codex); everything else --
+    detach, watcher, timeout, concurrency cap, !job list/kill, re-attach --
+    is the SAME machinery as _start_job (see _launch_detached).
+    """
+    workdir = store.get_workdir(agent["name"], thread_ts, create=True)
+    job_id = uuid.uuid4().hex[:8]
+    overrides = store.get_override(agent["name"], thread_ts)
+    backend = agent.get("backend", "claude")
+    runner = runners.get_runner(backend)
+    extra = {"kind": "spawn"}
+    if backend == "codex":
+        lastmsg = os.path.join(workdir, f"spawn-{job_id}.last")
+        argv = runner.build_command(
+            agent, task, None, True, lastmsg, overrides=overrides
+        )
+        extra["lastmsg"] = lastmsg
+    else:
+        fork_sid = _spawn_fork_session(agent, thread_ts)
+        if fork_sid:
+            argv = runner.build_command(
+                agent, task, fork_sid, False, overrides=overrides, fork_session=True
+            )
+        else:
+            argv = runner.build_command(
+                agent, task, str(uuid.uuid4()), True, overrides=overrides
+            )
+    return _launch_detached(
+        client, agent, channel, thread_ts, workdir, job_id, argv, task, extra=extra
+    )
+
+
+def _launch_detached(
+    client, agent, channel, thread_ts, workdir, job_id, argv, cmd, extra=None
+):
+    """Spawn `argv` detached in `workdir`, persist a jobs.json entry, arm a watcher.
+
+    Shared guts of _start_job (argv = /bin/sh -c <cmd>) and _start_spawn (see
+    its docstring for the spawn story; `extra` carries the spawn's
+    kind/lastmsg fields and `cmd` is then the task prompt). The process
+    gets its own session (start_new_session=True) so it is not killed when the
+    turn's CLI exits; stdin is /dev/null and stdout+stderr are written to
+    job-<id>.log inside the workdir. Returns the persisted store entry.
+    Failures raise; the caller guards (the reply already posted, so a spawn
+    failure must not destroy it). If persisting/arming fails AFTER the spawn,
+    the process is killed (best-effort) so no untracked orphan runs while the
+    user is told it failed.
 
     GLOBAL concurrency guard (JOB_MAX_CONCURRENT, read LIVE per spawn; default
-    _JOB_MAX_CONCURRENT_DEFAULT, 0 disables): at the limit the spawn is
-    DECLINED, never queued (returns None after posting a note into the thread).
-    The count-check + append are ONE critical section inside store.add_job (the
-    shared store lock), so two simultaneous spawns can never both squeeze past
-    the limit. The pid only exists after Popen, so we spawn FIRST and kill the
-    fresh process on a decline: simpler than reserving a placeholder-pid entry,
-    and race-free all the same (the persisted entry count never exceeds the
-    limit, and no pid-less entry ever reaches !job list or _reattach_jobs).
+    _JOB_MAX_CONCURRENT_DEFAULT, 0 disables), shared by jobs AND spawns: at the
+    limit the spawn is DECLINED, never queued (returns None after posting a
+    note into the thread). The count-check + append are ONE critical section
+    inside store.add_job (the shared store lock), so two simultaneous spawns
+    can never both squeeze past the limit. The pid only exists after Popen, so
+    we spawn FIRST and kill the fresh process on a decline: simpler than
+    reserving a placeholder-pid entry, and race-free all the same (the
+    persisted entry count never exceeds the limit, and no pid-less entry ever
+    reaches !job list or _reattach_jobs).
     """
     from src import app as _appfacade
 
     limit = _int_env("JOB_MAX_CONCURRENT", _JOB_MAX_CONCURRENT_DEFAULT)
-    workdir = store.get_workdir(agent["name"], thread_ts, create=True)
-    job_id = uuid.uuid4().hex[:8]
     logfile = os.path.join(workdir, f"job-{job_id}.log")
     with open(logfile, "wb") as log:
         proc = subprocess.Popen(
-            ["/bin/sh", "-c", cmd],
+            argv,
             cwd=workdir,
             start_new_session=True,
             stdin=subprocess.DEVNULL,
@@ -248,6 +414,7 @@ def _start_job(client, agent, channel, thread_ts, cmd):
             cmd,
             job_id,
             limit=limit if limit > 0 else None,
+            extra=extra,
         )
         if entry is not None:
             logger.info("job %s: started pid %s: %s", job_id, proc.pid, cmd)
@@ -365,6 +532,46 @@ def _watch_job(entry, client, proc=None, sleep=None, now=None):
         logger.exception("job %s: watcher failed", entry.get("id"))
 
 
+def _spawn_result(entry):
+    """Extract a finished SPAWN's final message, or None (caller falls back to tail).
+
+    codex (entry carries `lastmsg`): the -o last-message file holds the reply.
+    claude: the log holds the one-shot `--output-format json` blob on stdout
+    (stderr merged in), so scan the log's lines from the END for the JSON
+    object carrying a string "result". Any read/parse failure -> None, and the
+    completion note degrades to the raw log tail, never a crash.
+
+    ponytail: reads the whole claude log into memory; a one-shot -p run's
+    stdout is a single JSON line plus stderr noise, so this stays small. A
+    bounded reverse scan is the upgrade path if logs ever grow.
+    """
+    lastmsg = entry.get("lastmsg")
+    if lastmsg:
+        try:
+            with open(lastmsg, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read().strip()
+        except OSError:
+            return None
+        return text or None
+    try:
+        with open(entry.get("logfile"), "r", encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except (OSError, TypeError):
+        return None
+    for line in reversed(lines):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        result = payload.get("result") if isinstance(payload, dict) else None
+        if isinstance(result, str):
+            return result
+    return None
+
+
 def _finish_job(entry, client, exit_code, timed_out_min=None):
     """Completion flow: read the log tail, deliver the result, THEN drop the entry.
 
@@ -385,19 +592,44 @@ def _finish_job(entry, client, exit_code, timed_out_min=None):
     entry so the next restart re-attaches and re-delivers. A crash BETWEEN the
     post and the remove re-delivers too; a rare double-delivery beats a silently
     lost result.
+
+    A SPAWN entry (kind == "spawn"; an absent kind is a legacy job) delivers
+    the subagent's extracted final message (_spawn_result) instead of the log
+    tail, falling back to the tail on any extraction failure; the result is
+    capped head+tail at _SPAWN_RESULT_MAX_CHARS where it feeds the note (the
+    plain note must fit Slack's post limit, the prompt rides argv). It rides
+    the delivery PROMPT (or the plain note) as DATA: prompts are never
+    marker-parsed, so a `<<files:>>`/`<<job:>>`/`<<spawn:>>` inside the
+    subagent's output can never itself trigger an upload/job/spawn (only the
+    delivering agent's own reply goes through normal marker parsing).
     """
     from src import app as _appfacade
 
-    tail = _read_log_tail(entry.get("logfile"))
     name = entry.get("agent")
     channel = entry.get("channel")
     thread_ts = entry.get("thread_ts")
     code = "exit code unknown" if exit_code is None else f"exit code {exit_code}"
+    is_spawn = entry.get("kind") == "spawn"
+    noun = "background subagent" if is_spawn else "background job"
     if timed_out_min:
-        head = f"[background job timed out after {timed_out_min} min and was killed, {code}]"
+        head = f"[{noun} timed out after {timed_out_min} min and was killed, {code}]"
     else:
-        head = f"[background job finished, {code}]"
-    note = f"{head} output tail:\n{tail}"
+        head = f"[{noun} finished, {code}]"
+    result = _spawn_result(entry) if is_spawn else None
+    if result is not None:
+        # Cap the result HERE, the one point where it feeds `note`, so both the
+        # delivery-prompt path (rides the CLI argv) and the plain-note path
+        # (Slack's ~40k post limit) stay bounded.
+        if len(result) > _SPAWN_RESULT_MAX_CHARS:
+            half = _SPAWN_RESULT_MAX_CHARS // 2
+            result = (
+                result[:half]
+                + "\n… _(truncated: full subagent result too long)_ …\n"
+                + result[-half:]
+            )
+        note = f"{head} result:\n{result}"
+    else:
+        note = f"{head} output tail:\n{_read_log_tail(entry.get('logfile'))}"
 
     def _post_plain():
         """Post the raw completion note; True (and entry removed) on success."""
@@ -435,7 +667,7 @@ def _finish_job(entry, client, exit_code, timed_out_min=None):
         placeholder = client.chat_postMessage(
             channel=channel,
             thread_ts=_appfacade._reply_thread_ts(thread_ts),
-            text=f"{agent['display_name']} (background job) is thinking...",
+            text=f"{agent['display_name']} ({noun}) is thinking...",
         )
         placeholder_ts = placeholder["ts"]
     except Exception:  # noqa: BLE001 - a Slack hiccup must not wedge the busy slot
@@ -483,6 +715,10 @@ def _handle_job_command(agent, arg, thread_ts, say):
             cmd = j.get("cmd") or ""
             if len(cmd) > _JOB_LIST_CMD_CHARS:
                 cmd = cmd[:_JOB_LIST_CMD_CHARS] + "…"
+            # A spawn entry's cmd is its TASK prompt; mark it so the two kinds
+            # read apart in the list.
+            if j.get("kind") == "spawn":
+                cmd = f"spawn: {cmd}"
             lines.append(
                 f"- `{j.get('id')}` [{j.get('thread_ts')}] pid {j.get('pid')}: {cmd}"
             )

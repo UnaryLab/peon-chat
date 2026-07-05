@@ -43,7 +43,7 @@ peon/                          project root
       interrupt.py             !stop run-interrupt registry + phrase matcher (per-thread Interrupt tokens)
       scheduler.py             in-process cron loop (_scheduler_tick) + cron_matches
       files.py                 attachment download (inbound) / upload (outbound)
-      jobs.py                  <<job:>> marker, detached spawn, completion watcher, restart re-attach, !job list/kill
+      jobs.py                  <<job:>>/<<spawn:>> markers, detached spawn, completion watcher, restart re-attach, !job list/kill
       usage.py                 _format_usage / _usage_enabled (SHOW_USAGE footer)
       quotes.py                random_quote(): placeholder quotes from quotes.json (mtime-cached, graceful)
   tests/
@@ -87,8 +87,8 @@ keep working:
   `from src import app as _appfacade` (so a `setattr(app, name, ...)` in a test is
   honored at call time): `_run_and_update`, `_scheduler_tick`, `_fire_cron`,
   `build_app_for`, `SocketModeHandler`, `reconcile`, `_attachments_dir`,
-  `_http_get_bytes`, and the background-job seams `_start_job` / `_watch_job` /
-  `_finish_job` / `_pid_alive`. The store layer's `_resolve_path` seam (above) is
+  `_http_get_bytes`, and the background-job/spawn seams `_start_job` /
+  `_start_spawn` / `_watch_job` / `_finish_job` / `_pid_alive`. The store layer's `_resolve_path` seam (above) is
   the same idea for the store-path resolvers patched on `claude_runner`.
 
 When adding a symbol to a store/slack/runner submodule that a test references on
@@ -185,6 +185,30 @@ Note on `--agent` and `--resume`: we include `--agent` on **both** new and
 resume runs when the agent has one. Resume was verified to work, and repeating
 `--agent` on resume is harmless and consistent (it just re-asserts the same
 persona), so we always include it to guarantee a resumed thread keeps its brain.
+
+**The spawn fork shape (claude `<<spawn:>>` subagents only).** When a claude
+agent spawns a background subagent and the thread has a stored session id, the
+spawn argv RESUMES AND FORKS it instead of starting fresh:
+
+```
+claude -p --output-format json --resume <thread uuid> --fork-session [--agent <x>] --permission-mode bypassPermissions --model <m> [--effort <e>] "<task>"
+```
+
+`--fork-session` is verified against claude CLI 2.1.201 (`claude --help`:
+"When resuming, create a new session ID instead of reusing the original (use
+with --resume or --continue)"): the run inherits the session's full hidden
+conversation state but writes to a NEW session id the CLI mints, which peon
+never reads or persists; the thread's stored id is untouched and stays
+resumable (smoke-verified: after a fork, resuming the original id still
+recalls its own turns). Safe by construction: the spawn launches only AFTER
+the dispatching run finished and its reply posted, so the fork resumes a
+quiescent session (one accepted window: the busy slot frees right after the
+detached Popen, so a fast next message can `--resume` the same id while the
+fork's startup read is in flight; the fork never mutates the original, it
+just may not see that concurrent turn). No stored session (fresh thread or
+`!new`-cleared) -> the fresh minted `--session-id` spawn shape, unchanged.
+Normal (non-spawn) runs
+never pass the flag, so the load-bearing default argv above is byte-identical.
 
 ## The verified codex invocation (Codex-backed agents, e.g. Dijkstra)
 
@@ -317,10 +341,12 @@ All four write atomically (temp file + `os.replace`, see above):
   enabled}` entries (see [Cron](#cron-slack-native-in-process)).
 - **`jobs.json`** (list): `{id, agent, channel, thread_ts, pid, logfile, cmd,
   started_ts}` background-job entries (see
-  [Background jobs](#background-jobs-job-detached));
-  `thread_ts` is the conversation KEY, so it may be a DM channel id. A persisted
-  entry means "still running (or awaiting re-attach after a restart)"; the
-  completion watcher removes it.
+  [Background jobs](#background-jobs-job--spawn-detached)); a subagent SPAWN
+  entry adds `kind: "spawn"` (absent = legacy job; loaders tolerate old
+  entries) and, for codex, its `lastmsg` file path, with `cmd` holding the task
+  prompt. `thread_ts` is the conversation KEY, so it may be a DM channel id. A
+  persisted entry means "still running (or awaiting re-attach after a
+  restart)"; the completion watcher removes it.
 
 When a store fn is called with `path=None`, `store.base._resolve_path(attr,
 fallback)` resolves the JSON path through the LIVE `claude_runner.<attr>` (e.g.
@@ -477,14 +503,17 @@ escaping it are rejected) and uploaded via `files_upload_v2`. Both need the
 `files:read` / `files:write` bot scopes. No marker (the default), or no workdir
 resolved for the thread, uploads nothing.
 
-## Background jobs (`<<job:>>`, detached)
+## Background jobs (`<<job:>>` / `<<spawn:>>`, detached)
 
 A run's turn is a single non-interactive CLI process: anything it backgrounds
-dies with it. The sanctioned escape hatch is the trailing
-`<<job: <shell command>>>` marker (src/slack/jobs.py), following the SAME
-trailing-only rule as `<<files:>>` (a mid-text mention is plain prose; the
-per-turn preamble tells the agent to emit it only when the user explicitly asks
-for long/background work). The two markers use DIFFERENT body patterns: the
+dies with it. The sanctioned escape hatches are the trailing
+`<<job: <shell command>>>` marker (a verbatim shell command) and its sibling
+`<<spawn: <task prompt>>>` (a detached one-shot CLI SUBAGENT run; both in
+src/slack/jobs.py), following the SAME trailing-only rule as `<<files:>>` (a
+mid-text mention is plain prose; the per-turn preamble PREFERS `<<spawn:>>`
+for long tasks needing intelligence, keeps `<<job:>>` for verbatim commands,
+and says to emit either only for genuinely long or explicitly asked-for
+background work). The two markers use DIFFERENT body patterns: the
 files pair keeps the tempered-dot helper (`files._trailing_marker_res`, body
 cannot contain `>>`), while the job marker owns its own GREEDY pair in
 src/slack/jobs.py so a shell command CAN contain `>>` (append redirects,
@@ -503,15 +532,24 @@ buys: a multi-line body whose FIRST line contains `>>` is prose; put `>>`
 appends on a single-line marker or on later lines of a heredoc. A command
 ending in `>` works too (a reply ending `...>>>`: the final two `>` close the
 marker, the rest stays in the command). The one carve-out: the job body may
-not contain another marker opener (`<<job:` / `<<files:`), so a trailing
-files marker after a mid-text job mention is never swallowed.
+not contain another marker opener (`<<job:` / `<<files:` / `<<spawn:`), so a
+trailing sibling marker after a mid-text job mention is never swallowed.
 
-**Marker order (deterministic, tested).** In `_run_and_update` the JOB marker is
-parsed FIRST, then the FILES marker, both BEFORE the 39,000-char Slack cap. So a
-reply ending `<<files: a>>` then `<<job: cmd>>` (job line LAST) triggers both;
-with the lines the other way around the files strip leaves the job marker
-mid-text, i.e. plain prose. Both markers are also scrubbed from streamed
-partials so neither flashes mid-stream.
+The sibling `<<spawn: <task prompt>>>` marker carries a natural-language TASK
+for a detached one-shot CLI SUBAGENT run, not shell. It shares the greedy
+pattern factory (`_greedy_marker_res` in src/slack/jobs.py builds both the job
+and spawn (parse, strip) pairs), so every anchoring rule above -- line-start
+opener, last-occurrence parse, opener-line discrimination, the nested-opener
+carve-out -- applies identically; only what the body MEANS differs (see the
+Subagent spawn block below).
+
+**Marker order (deterministic, tested).** In `_run_and_update` the SPAWN marker
+is parsed FIRST, then the JOB marker, then the FILES marker, all BEFORE the
+39,000-char Slack cap. So a reply ending `<<files: a>>` then `<<job: cmd>>`
+then `<<spawn: task>>` (spawn line LAST) triggers all three; a marker line out
+of that order is left mid-text by the earlier strips, i.e. plain prose. All
+three markers are also scrubbed from streamed partials so none flashes
+mid-stream.
 
 **Spawn (`_start_job`).** After the final reply posts (never before: a spawn
 failure must not clobber the reply; it surfaces as a warning note in the
@@ -528,6 +566,55 @@ process GROUP is SIGKILLed and reaped (the job is a session/group leader, so a
 child it already forked dies too) and no untracked orphan runs while the user
 is told the job failed to start. An interrupted (`!stop`) run never spawns its job
 (the worker gates the spawn on the cancel token).
+
+**Subagent spawn (`_start_spawn`).** The `<<spawn:>>` sibling seam (also
+Kind-B, resolved through the app facade). Instead of `/bin/sh -c`, it builds a
+FRESH one-shot argv through the dispatching agent's own backend runner's
+`build_command`, applying the thread's `overrides.json` model/effort like a
+normal run:
+  - claude: the NON-STREAMING one-shot shape (`--output-format json`), with
+    the agent's `--agent`/`--model`/`--effort` per the normal resolve rules.
+    With a stored thread session id the spawn FORKS it: `--resume <thread id>
+    --fork-session` (see The spawn fork shape above), inheriting the full
+    hidden conversation state while writing to a NEW id the CLI mints, never
+    persisted; the thread's stored id is untouched. Without one, fresh with a
+    minted `--session-id` uuid, equally ephemeral (NEVER stored in
+    `sessions.json`). `jobs._spawn_fork_session` is the ONE place the
+    fork-vs-fresh decision lives (it also drives the transcript-prepend skip
+    below).
+  - codex: the verified fresh shape (`codex exec --json --skip-git-repo-check
+    -s danger-full-access [--profile <p>] -o <lastmsg> ...`) with the `-o`
+    lastmsg file placed IN the thread workdir (`spawn-<id>.last`) so the final
+    message survives a restart.
+Both hand the argv to the SAME `_launch_detached` guts `_start_job` uses
+(detach, `job-<id>.log`, watcher, decline-at-limit), and the `jobs.json` entry
+adds `kind: "spawn"` (absent = legacy job; loaders tolerate old entries) plus
+codex's `lastmsg` path via `store.add_job(extra=...)`; its `cmd` field holds
+the task prompt (shown by `!job list` prefixed `spawn:`). There is no
+subprocess-level timeout on the spawn (it never passes through `run_claude`/
+`run_codex`); the watcher's `AGENT_TIMEOUT_MIN` window is the bound.
+
+**Spawn prompt composition (`_compose_spawn_prompt`).** A FORKED claude spawn
+already carries the thread's full hidden context, so its transcript prepend
+is SKIPPED (`_run_and_update` consults `jobs._spawn_fork_session` before
+composing). Every other spawn (fresh claude, all codex) gets a FRESH session
+and no thread access, so two things compensate. The per-turn preamble demands
+the spawn prompt be a COMPLETE BRIEF for a reader with zero context (goal,
+parameters, file paths, decisions restated; never "above"/"as discussed";
+worded backend-agnostically -- the spawn MAY not see the conversation -- so
+one sentence covers both backends). And deterministically, before the `_start_spawn`
+seam, `_run_and_update` prepends the turn's ALREADY-FETCHED Slack transcript
+(threaded in from `_handle` as the `history` kwarg, never re-fetched) via
+`jobs._compose_spawn_prompt`, the ONE place the composition template lives:
+`Recent conversation for context (Slack thread transcript):\n<transcript>\n\n
+Your task:\n<task>`. The transcript portion is capped at
+`_SPAWN_TRANSCRIPT_MAX_CHARS` (16000; the prompt rides the CLI argv, so it
+must stay bounded), keeping the NEWEST tail behind a truncation note. Plain
+prompt text, identical for claude and codex, and the transcript sits
+MID-PROMPT, so marker-like text inside it is mechanically inert (prompts are
+never marker-parsed). Callers with NO transcript -- flat 1:1 DMs skip the
+fetch, and cron fires / completion deliveries synthesize turns without one --
+spawn the task body alone: no context block, no crash.
 
 **Concurrency limit (`JOB_MAX_CONCURRENT`).** The limit is GLOBAL across all
 agents (it protects the machine): `_start_job` reads the env var LIVE per spawn
@@ -580,7 +667,17 @@ lives) and delivers the result mirroring a cron fire: it claims the thread's
 busy slot via `try_register`, posts a placeholder, and synthesizes a follow-up
 agent turn through the SAME `_run_and_update` seam with the prompt
 `[background job finished, exit code N] output tail:\n...`, so the thread's
-existing session resumes and the agent summarizes in context. A thread that is
+existing session resumes and the agent summarizes in context. For a SPAWN
+entry (`kind == "spawn"`; an absent kind is a legacy job) the delivered body is
+the subagent's extracted final message instead of the tail (`_spawn_result`:
+codex reads the entry's `lastmsg` file; claude scans the log's lines from the
+END for the JSON object carrying a string `result`; any read/parse failure
+falls back to the raw log tail), under a `[background subagent finished/timed
+out ...]` head. NESTED-MARKER GUARD: the extracted result rides the delivery
+turn's PROMPT (or the busy-thread plain note) as DATA, and prompts are never
+marker-parsed, so a `<<files:>>`/`<<job:>>`/`<<spawn:>>` inside the subagent's
+output can never itself trigger an upload/job/spawn; only the delivering
+agent's OWN reply goes through normal marker parsing. A thread that is
 BUSY at completion time is NOT skipped silently: the raw completion note (exit
 code + tail) is posted as a plain message instead. Every post translates the
 conversation key via `_reply_thread_ts` (a flat-DM key posts flat). The
@@ -602,9 +699,10 @@ Crash-safe: a broken store or one bad entry never blocks startup.
 
 **Control phrases (`!job list` / `!job kill <id>`).** `jobs._handle_job_command`
 (dispatched by `_handle_control_phrase`, agent-scoped) lists the agent's jobs
-or SIGTERMs a job's process group; the kill does NOT remove the `jobs.json`
-entry, so it settles through the watcher's normal completion path above (the
-terminated job's exit + log tail are delivered like any other completion). See
+(a spawn entry shows its task prompt prefixed `spawn:`) or SIGTERMs a
+job's/spawn's process group; the kill does NOT remove the `jobs.json` entry, so
+it settles through the watcher's normal completion path above (the terminated
+job's exit + log tail are delivered like any other completion). See
 [Control phrases](#control-phrases-one-dispatcher).
 
 ## Cron (Slack-native, in-process)
