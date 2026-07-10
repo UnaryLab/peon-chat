@@ -18,6 +18,7 @@ import threading
 from src.runners import claude_runner, common
 
 from tests.helpers import (
+    _FakeJobClient,
     _FakeSay,
     _CONTROL_AGENT,
     _FILE_AGENT,
@@ -414,17 +415,6 @@ def test_watch_job_reattach_dead_pid_finishes_immediately(monkeypatch):
 # to a plain note when the thread is busy / the agent is gone. jobs.json entry
 # is dropped either way; posting translates the conversation key (flat DM).
 # ---------------------------------------------------------------------------
-
-
-class _FakeJobClient:
-    """Captures chat_postMessage calls (placeholder or plain completion note)."""
-
-    def __init__(self):
-        self.posts = []
-
-    def chat_postMessage(self, channel=None, thread_ts=None, text=None):
-        self.posts.append({"channel": channel, "thread_ts": thread_ts, "text": text})
-        return {"ts": "ph-ts"}
 
 
 def _job_entry(tmp_path, jobs_path, agent="aristotle", thread_ts="9000000000.000900"):

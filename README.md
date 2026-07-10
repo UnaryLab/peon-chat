@@ -28,9 +28,6 @@ run, and each persona field is ignored on the other backend. Dijkstra ships
 `codex_profile: project_manager`; that profile comes from the
 `unarylab-codex-marketplace` (its `scripts/install_profiles.py` installs
 `~/.codex/project_manager.config.toml`).
-`app.py` dispatches to the right runner via `runners.get_runner(backend)`.
-`src/agents.py` loads + validates `agents.json` into its `REGISTRY` at import
-(duplicate agent `name`s are rejected at load).
 
 Per-agent **model** and **effort** come SOLELY from the `model`/`effort` fields in
 `agents.json` (the single source of truth, set on every shipped entry). There is
@@ -48,23 +45,26 @@ For internals and design (layout, backend abstraction, the verified CLI
 invocations, context isolation, and the async model), see
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## Installation
-
-### Requirements
+## Requirements
 
 - **git** with access to the **private** GitHub repo. Because the repo is
   private, you need either an SSH key registered with your GitHub account or a
   personal access token (PAT) with `repo` scope.
 - **conda** (miniconda or anaconda) on `PATH`, used to create the **Python 3.12**
   environment.
-- The **`claude` CLI**, installed, authenticated, and on `PATH` (used by the
-  claude-backed agents; needs the `unarylab-research` plugin available, see
-  [Prerequisites](#prerequisites)).
-- The **`codex` CLI**, installed, authenticated, and on `PATH` (used by the
-  codex-backed agent; only required if a Codex-backed agent like Dijkstra is
-  configured).
+- The **`claude` CLI** (used by the claude-backed agents), installed,
+  authenticated, and on `PATH`, with the `unarylab-research` plugin available
+  (so `--agent unarylab-research:project_manager` resolves). Verified against
+  claude CLI 2.1.187.
+- The **`codex` CLI** (only required if a Codex-backed agent like Dijkstra is
+  configured), installed, authenticated, and on `PATH`. Verified against
+  codex-cli 0.141.0.
 
-### Steps
+Both CLIs just need to be on `PATH`, so this works the same on Linux and
+macOS. (Runs are fully unsandboxed on both: codex `-s danger-full-access`,
+claude `--permission-mode bypassPermissions`.)
+
+## Installation
 
 1. **Clone the private repo** (private access via SSH key or PAT is required):
    ```sh
@@ -85,15 +85,53 @@ invocations, context isolation, and the async model), see
    cp .env.example .env
    ```
    Fill in each app's Slack tokens (`SLACK_BOT_TOKEN_*` / `SLACK_APP_TOKEN_*`);
-   see [Prerequisites](#prerequisites) for how to create the Slack apps and
-   obtain the bot (`xoxb-...`) and app-level (`xapp-...`) tokens. Model and effort
-   are NOT set here: each agent's `model`/`effort` live in `agents.json`.
+   see [Create the Slack apps](#create-the-slack-apps) below for how to create
+   the Slack apps and obtain the bot (`xoxb-...`) and app-level (`xapp-...`)
+   tokens. The process loads `.env` automatically on startup (via
+   `python-dotenv`). An agent is started only if BOTH of its tokens are set;
+   agents with a missing token are skipped with a warning, so you can run with
+   just one configured agent. Model and effort are NOT set here: each agent's
+   `model`/`effort` live in `agents.json`.
 5. **Run it:**
    ```sh
    conda run -n peon python -m src
    ```
    For a real always-on deployment (systemd / launchd / nohup), see
    [Running always-on](#running-always-on).
+
+### Create the Slack apps
+
+**One Slack app per agent (with Socket Mode enabled).** For each of Aristotle,
+Brunel, Cicero, Dijkstra, create a separate app from its manifest, which you
+generate from `agents.json` with `python -m src manifest <name>` (Slack:
+*Create New App* -> *From a manifest*, pasting the printed JSON). Run
+`python -m src manifest` with no name to print every agent's manifest as a
+JSON array at once. For EACH app:
+
+- **Bot scopes** (already in the manifest): `app_mentions:read`, `chat:write`,
+  plus `channels:history`, `groups:history`, `im:history`, `mpim:history` so
+  the bot can read
+  threaded replies it should continue (including in group DMs), and
+  `files:read` / `files:write` so it
+  can read attachments and upload files it produces.
+- **Event subscriptions** (already in the manifest): `app_mention` (and
+  `message.channels`, `message.groups`, `message.im`, `message.mpim` for
+  thread follow-ups).
+- **Existing apps:** if you created an app from an older manifest (before the
+  `mpim:history` scope and `message.mpim` event, or before the `files:*`
+  scopes), regenerate its manifest with `python -m src manifest <name>`,
+  update the app from it (or add the scope/event by hand), and REINSTALL the
+  app so the additions take effect.
+- **Socket Mode**: enabled. Create an **App-Level Token** (Basic Information
+  -> App-Level Tokens) with the `connections:write` scope (`xapp-...`).
+- Install the app to your workspace to get its **Bot User OAuth Token**
+  (`xoxb-...`).
+- Set that app's two tokens into the env vars suffixed by the agent's
+  uppercased name: `SLACK_BOT_TOKEN_ARISTOTLE` / `SLACK_APP_TOKEN_ARISTOTLE`,
+  `SLACK_BOT_TOKEN_BRUNEL` / `SLACK_APP_TOKEN_BRUNEL`,
+  `SLACK_BOT_TOKEN_CICERO` / `SLACK_APP_TOKEN_CICERO`,
+  `SLACK_BOT_TOKEN_DIJKSTRA` / `SLACK_APP_TOKEN_DIJKSTRA` (eight vars total). Dijkstra's
+  pair is optional: leave it unset and Dijkstra is simply skipped at startup.
 
 ## Using the agents in Slack
 
@@ -145,7 +183,7 @@ Each agent is its own Slack bot that you address by name.
    marker at the very end of the reply counts (merely mentioning the syntax
    mid-text does nothing), and an ordinary
    reply uploads nothing. (This needs the `files:read` / `files:write` scopes, see
-   [Prerequisites](#prerequisites).)
+   [Create the Slack apps](#create-the-slack-apps).)
 7. **See usage.** Each reply ends with a small one-line footer (context %,
    tokens, cost, duration) unless the operator disabled `SHOW_USAGE` (default
    on); fields that a backend does not report are omitted.
@@ -237,6 +275,32 @@ it).
   hand a thread to another agent, @-mention it yourself; there is no autonomous
   bot-to-bot relay (and so no bot-to-bot loops).
 
+## Configuration
+
+Runtime configuration lives in `.env`; per-agent model and effort live only in
+`agents.json` (see the intro above).
+
+**`.env` is authoritative: it overrides shell-exported environment variables.**
+It is loaded first and with `override=True`, so a value in `.env` wins over any
+matching variable already exported in your shell. This applies to every config
+var, including `SESSIONS_PATH` and the `AGENT_TIMEOUT_MIN` timeout (the
+session-store path is resolved live at store access, so it honors `.env` even
+though it is read early at import time). A malformed `AGENT_TIMEOUT_MIN` (e.g.
+`90m`) logs a warning and the default is used; it never kills the process at
+startup.
+
+**Skills that need extra environment or web access.** peon spawns the CLI with no
+explicit `env=`, so every variable in `.env` is inherited by the `claude`/`codex`
+subprocess (and any skill it runs). Put any value a skill expects from your shell
+but that a service manager (launchd/systemd) does NOT inherit here, rather than
+hardcoding it into the OS-specific `deploy/` templates: e.g. `OBSIDIAN_VAULT_PATH`
+for the `obsidian-*` research skills, set to your vault root (the folder
+containing `research/`). Web tools are gated by the CLI itself, not by peon, and a
+headless run cannot prompt for permission, so pre-approve them once: for
+Claude, add `WebSearch` / `WebFetch` to `permissions.allow` in
+`~/.claude/settings.json`; for Codex, set `[tools] web_search = true` in
+`~/.codex/config.toml`.
+
 ## How to add a new agent (e.g. Euclid)
 
 Four steps:
@@ -308,78 +372,6 @@ means that agent is treated as not-yet-startable until the next reload.
 
 > POSIX only (macOS/Linux). For the full reconcile/diff mechanics, see
 > [ARCHITECTURE.md](ARCHITECTURE.md).
-
-## Prerequisites
-
-1. **The `claude` CLI** (for the claude-backed agents), installed and
-   authenticated, with the `unarylab-research` plugin available (so `--agent
-   unarylab-research:project_manager` resolves). Verified against claude CLI
-   2.1.187.
-1b. **The `codex` CLI** (only if a Codex-backed agent like Dijkstra is configured),
-   installed, authenticated, and on `PATH`. Verified against codex-cli 0.141.0.
-   Both CLIs just need to be on `PATH`, so this works the same on Linux and
-   macOS. (Runs are fully unsandboxed on both: codex `-s danger-full-access`,
-   claude `--permission-mode bypassPermissions`.)
-2. **One Slack app per agent (with Socket Mode enabled).** For each of Aristotle,
-   Brunel, Cicero, Dijkstra, create a separate app from its manifest, which you
-   generate from `agents.json` with `python -m src manifest <name>` (Slack:
-   *Create New App* -> *From a manifest*, pasting the printed JSON). Run
-   `python -m src manifest` with no name to print every agent's manifest as a
-   JSON array at once. For EACH app:
-   - **Bot scopes** (already in the manifest): `app_mentions:read`, `chat:write`,
-     plus `channels:history`, `groups:history`, `im:history`, `mpim:history` so
-     the bot can read
-     threaded replies it should continue (including in group DMs), and
-     `files:read` / `files:write` so it
-     can read attachments and upload files it produces.
-   - **Event subscriptions** (already in the manifest): `app_mention` (and
-     `message.channels`, `message.groups`, `message.im`, `message.mpim` for
-     thread follow-ups).
-   - **Existing apps:** if you created an app from an older manifest (before the
-     `mpim:history` scope and `message.mpim` event, or before the `files:*`
-     scopes), regenerate its manifest with `python -m src manifest <name>`,
-     update the app from it (or add the scope/event by hand), and REINSTALL the
-     app so the additions take effect.
-   - **Socket Mode**: enabled. Create an **App-Level Token** (Basic Information
-     -> App-Level Tokens) with the `connections:write` scope (`xapp-...`).
-   - Install the app to your workspace to get its **Bot User OAuth Token**
-     (`xoxb-...`).
-   - Set that app's two tokens into the env vars suffixed by the agent's
-     uppercased name: `SLACK_BOT_TOKEN_ARISTOTLE` / `SLACK_APP_TOKEN_ARISTOTLE`,
-     `SLACK_BOT_TOKEN_BRUNEL` / `SLACK_APP_TOKEN_BRUNEL`,
-     `SLACK_BOT_TOKEN_CICERO` / `SLACK_APP_TOKEN_CICERO`,
-     `SLACK_BOT_TOKEN_DIJKSTRA` / `SLACK_APP_TOKEN_DIJKSTRA` (eight vars total). Dijkstra's
-     pair is optional: leave it unset and Dijkstra is simply skipped at startup.
-3. **Python via conda** (env `peon`):
-   ```sh
-   conda run -n peon pip install -r requirements.txt
-   ```
-
-Copy `.env.example` to `.env` and fill in the tokens you have. The process loads
-`.env` automatically on startup (via `python-dotenv`). An agent is started only
-if BOTH of its tokens are set; agents with a missing token are skipped with a
-warning, so you can run with just one configured agent.
-
-**`.env` is authoritative: it overrides shell-exported environment variables.**
-It is loaded first and with `override=True`, so a value in `.env` wins over any
-matching variable already exported in your shell. This applies to every config
-var, including `SESSIONS_PATH` and the `AGENT_TIMEOUT_MIN` timeout (the
-session-store path is resolved live at store access, so it honors `.env` even
-though it is read early at import time). A malformed `AGENT_TIMEOUT_MIN` (e.g.
-`90m`) logs a warning and the default is used; it never kills the process at
-startup.
-
-**Skills that need extra environment or web access.** peon spawns the CLI with no
-explicit `env=`, so every variable in `.env` is inherited by the `claude`/`codex`
-subprocess (and any skill it runs). Put any value a skill expects from your shell
-but that a service manager (launchd/systemd) does NOT inherit here, rather than
-hardcoding it into the OS-specific `deploy/` templates: e.g. `OBSIDIAN_VAULT_PATH`
-for the `obsidian-*` research skills, set to your vault root (the folder
-containing `research/`). Web tools are gated by the CLI itself, not by peon, and a
-headless run cannot prompt for permission, so pre-approve them once: for
-Claude, add `WebSearch` / `WebFetch` to `permissions.allow` in
-`~/.claude/settings.json`; for Codex, set `[tools] web_search = true` in
-`~/.codex/config.toml`.
 
 ## Running always-on
 

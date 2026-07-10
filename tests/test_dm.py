@@ -16,32 +16,13 @@ from tests.helpers import (
     _FILE_AGENT,
     _HANDLE_AGENT,
     _HAVE_APP,
-    _FakeBoltApp,
     _FakeSay,
     _appmod,
+    _built_app,
 )
 
 # A realistic Slack DM channel id: the flat-DM conversation key.
 _DM_CHANNEL = "D0123ABCDEF"
-
-
-def _built_app(monkeypatch, calls):
-    """Build a Bolt app on the fake App class with _handle capturing events."""
-    from src.slack import app as slack_app
-
-    agent = {
-        "name": "brunel",
-        "display_name": "Brunel",
-        "backend": "claude",
-        "claude_agent": None,
-    }
-    monkeypatch.setattr(slack_app, "App", _FakeBoltApp)
-    monkeypatch.setattr(
-        slack_app.handlers,
-        "_handle",
-        lambda agent, event, client, say: calls.append(event["text"]),
-    )
-    return slack_app.build_app_for(agent, "xoxb-brunel")
 
 
 # --- 1. the message listener routes im messages to _handle --------------------

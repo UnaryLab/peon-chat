@@ -87,7 +87,7 @@ keep working:
   `from src import app as _appfacade` (so a `setattr(app, name, ...)` in a test is
   honored at call time): `_run_and_update`, `_scheduler_tick`, `_fire_cron`,
   `build_app_for`, `SocketModeHandler`, `reconcile`, `_attachments_dir`,
-  `_http_get_bytes`, and the background-job/spawn seams `_start_job` /
+  `_http_get_bytes`, `_reply_thread_ts`, and the background-job/spawn seams `_start_job` /
   `_start_spawn` / `_watch_job` / `_finish_job` / `_pid_alive`. The store layer's `_resolve_path` seam (above) is
   the same idea for the store-path resolvers patched on `claude_runner`.
 
@@ -672,7 +672,9 @@ entry (`kind == "spawn"`; an absent kind is a legacy job) the delivered body is
 the subagent's extracted final message instead of the tail (`_spawn_result`:
 codex reads the entry's `lastmsg` file; claude scans the log's lines from the
 END for the JSON object carrying a string `result`; any read/parse failure
-falls back to the raw log tail), under a `[background subagent finished/timed
+falls back to the raw log tail), capped head+tail at `_SPAWN_RESULT_MAX_CHARS`
+(8000: the plain note must fit Slack's post limit, and the delivery prompt
+rides the CLI argv), under a `[background subagent finished/timed
 out ...]` head. NESTED-MARKER GUARD: the extracted result rides the delivery
 turn's PROMPT (or the busy-thread plain note) as DATA, and prompts are never
 marker-parsed, so a `<<files:>>`/`<<job:>>`/`<<spawn:>>` inside the subagent's

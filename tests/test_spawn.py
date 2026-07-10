@@ -25,6 +25,7 @@ from tests.helpers import (
     MODEL,
     _CONTROL_AGENT,
     _FILE_AGENT,
+    _FakeJobClient,
     _FakeSay,
     _HAVE_APP,
     _appmod,
@@ -346,15 +347,6 @@ def test_spawn_result_parse_failure_returns_none(tmp_path):
 # Completion delivery: extracted result feeds the synthesized follow-up turn;
 # fallback to the raw tail; legacy (kindless) entries keep the job wording.
 # ---------------------------------------------------------------------------
-
-
-class _FakeJobClient:
-    def __init__(self):
-        self.posts = []
-
-    def chat_postMessage(self, channel=None, thread_ts=None, text=None):
-        self.posts.append({"channel": channel, "thread_ts": thread_ts, "text": text})
-        return {"ts": "ph-ts"}
 
 
 def _spawn_entry(tmp_path, jobs_path, result="the final answer", agent="aristotle"):

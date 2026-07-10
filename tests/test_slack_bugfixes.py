@@ -22,9 +22,9 @@ from tests.helpers import (
     _FILE_AGENT,
     _HANDLE_AGENT,
     _HAVE_APP,
-    _FakeBoltApp,
     _FakeSay,
     _appmod,
+    _built_app,
 )
 
 
@@ -60,24 +60,6 @@ def test_dedup_is_per_agent_not_global():
 
 
 # --- 2. + 13. on_message mention ownership + bot-id cache ---------------------
-
-
-def _built_app(monkeypatch, calls):
-    from src.slack import app as slack_app
-
-    agent = {
-        "name": "brunel",
-        "display_name": "Brunel",
-        "backend": "claude",
-        "claude_agent": None,
-    }
-    monkeypatch.setattr(slack_app, "App", _FakeBoltApp)
-    monkeypatch.setattr(
-        slack_app.handlers,
-        "_handle",
-        lambda agent, event, client, say: calls.append(event["text"]),
-    )
-    return slack_app.build_app_for(agent, "xoxb-brunel")
 
 
 def test_on_message_skips_follow_up_directed_at_another_bot(monkeypatch, tmp_path):

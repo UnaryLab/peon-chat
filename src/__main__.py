@@ -43,11 +43,6 @@ from . import agents  # noqa: E402 - must follow the authoritative load_env() ab
 from .manifest import build_manifest  # noqa: E402 - same: load .env first
 
 
-def _find_agent(name):
-    """Return the registry entry named `name`, or None if there is no such agent."""
-    return next((a for a in agents.REGISTRY if a["name"] == name), None)
-
-
 def _print_manifest(argv):
     """Handle `python -m src manifest [<name>] [--write]` (Slack-free: agents + manifest only).
 
@@ -60,7 +55,7 @@ def _print_manifest(argv):
 
     # Resolve targets: a single named agent, or every agent.
     if names:
-        agent = _find_agent(names[0])
+        agent = agents.get(names[0])
         if agent is None:
             valid = ", ".join(a["name"] for a in agents.REGISTRY)
             print(

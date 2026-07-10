@@ -248,3 +248,40 @@ class _FakeClient:
     def chat_update(self, channel=None, ts=None, text=None):
         self.updates.append({"channel": channel, "ts": ts, "text": text})
         return {"ok": True}
+
+
+class _FakeJobClient:
+    """Captures chat_postMessage calls (placeholder or plain completion note).
+
+    Shared by the job/spawn completion-delivery tests (test_jobs, test_spawn).
+    """
+
+    def __init__(self):
+        self.posts = []
+
+    def chat_postMessage(self, channel=None, thread_ts=None, text=None):
+        self.posts.append({"channel": channel, "thread_ts": thread_ts, "text": text})
+        return {"ts": "ph-ts"}
+
+
+def _built_app(monkeypatch, calls):
+    """Build a Bolt app on _FakeBoltApp with _handle capturing event texts.
+
+    Shared by the listener-routing tests (test_slack_bugfixes, test_dm): invoke
+    the captured listeners (events["message"] / events["app_mention"]) directly.
+    """
+    from src.slack import app as slack_app
+
+    agent = {
+        "name": "brunel",
+        "display_name": "Brunel",
+        "backend": "claude",
+        "claude_agent": None,
+    }
+    monkeypatch.setattr(slack_app, "App", _FakeBoltApp)
+    monkeypatch.setattr(
+        slack_app.handlers,
+        "_handle",
+        lambda agent, event, client, say: calls.append(event["text"]),
+    )
+    return slack_app.build_app_for(agent, "xoxb-brunel")
