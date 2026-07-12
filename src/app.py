@@ -30,7 +30,12 @@ from __future__ import annotations
 import subprocess  # noqa: F401 - Kind A: tests patch app.subprocess.Popen (the detached job spawn)
 import tempfile  # noqa: F401 - Kind A: tests patch app.tempfile.gettempdir
 
-from slack_bolt.adapter.socket_mode import (  # noqa: F401 - Kind B: tests patch app.SocketModeHandler
+# websocket_client adapter, NOT the default builtin: slack_sdk's hand-rolled
+# builtin websocket client dies in a BrokenPipeError reconnect loop behind a
+# VPN (handshake succeeds, first write fails); the websocket-client-backed
+# adapter holds the connection. Same class name/interface, so tests and the
+# Kind-B patch target are unaffected.
+from slack_bolt.adapter.socket_mode.websocket_client import (  # noqa: F401 - Kind B: tests patch app.SocketModeHandler
     SocketModeHandler,
 )
 

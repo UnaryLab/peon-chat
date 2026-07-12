@@ -1,6 +1,10 @@
 # Slack Bolt (Socket Mode handler ships with it). Loose lower bounds.
 slack-bolt>=1.18
 
+# Backs the websocket_client Socket Mode adapter (src/app.py); the builtin
+# adapter breaks behind a VPN (BrokenPipeError reconnect loop).
+websocket-client>=1.8
+
 # Loads the eight per-agent tokens + CLAUDE_* from .env at startup.
 python-dotenv>=1.0
 
