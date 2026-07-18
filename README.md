@@ -238,9 +238,12 @@ Shift+Enter):
 
 **One run per thread.** While an agent is still working in a thread, a new
 message to it in that thread is declined with a short "still working" note:
-wait for the run to finish, or `!stop` it first. A scheduled `!cron` fire that
-lands while a run is already in flight in its thread is skipped the same way
-(its placeholder notes the skip).
+wait for the run to finish, or `!stop` it first. Since the declined exchange
+pushes the run's placeholder (where the reply lands as an in-place edit) up the
+thread, the run then also posts a short "finished, see the updated reply above"
+note when it settles. A scheduled `!cron` fire that lands while a run is
+already in flight in its thread is skipped the same way (its placeholder notes
+the skip).
 
 **SECURITY: agents run with full unsandboxed machine access.** Every agent runs
 FULLY UNSANDBOXED (claude `--permission-mode bypassPermissions`, codex

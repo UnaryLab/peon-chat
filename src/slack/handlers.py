@@ -91,12 +91,34 @@ _THREAD_HISTORY_LIMIT = 50
 _THREAD_HISTORY_PAGE_LIMIT = 200
 _THREAD_HISTORY_MAX_PAGES = 6
 
-# Slack rejects chat_update/chat_postMessage text over 40,000 chars
-# (msg_too_long), which would turn a long finished reply into a generic error.
-# Cap run output BELOW that, leaving margin for the truncation note, the
-# interrupted label, and the usage footer appended after the cap.
-_SLACK_MAX_TEXT_LEN = 39_000
+# Slack rejects chat_update text over 4,000 chars (msg_too_long), which would
+# turn a long finished reply into a generic error. Cap run output below that,
+# leaving margin for the truncation note, interrupted label, usage footer, and
+# terminal newlines appended after the cap.
+_SLACK_MAX_TEXT_LEN = 3_800
 _TRUNCATION_NOTICE = "\n… _(truncated: full reply too long for Slack)_"
+
+# Some agent profiles must end every response with this exact final line. Treat
+# it as an optional postamble around delivery-marker parsing; the marker itself
+# remains trailing-only, and agents without the postamble are unchanged.
+_TERMINAL_POSTAMBLE_RE = re.compile(r"\n+[ \t]*(Meow\.\.\.)[ \t]*\Z")
+
+
+def _split_terminal_postamble(text):
+    """Detach the optional final postamble so a marker before it is terminal."""
+    match = _TERMINAL_POSTAMBLE_RE.search(text or "")
+    if not match:
+        return text, ""
+    return text[: match.start()].rstrip(), match.group(1)
+
+
+def _restore_terminal_postamble(text, postamble):
+    """Restore a detached postamble after delivery markers have been removed."""
+    if not postamble:
+        return text
+    if not text:
+        return postamble
+    return text.rstrip() + "\n\n" + postamble
 
 
 def _truncate_for_slack(text):
@@ -232,11 +254,12 @@ def _make_stream_updater(client, channel, placeholder_ts, now=None):
         # the trailing-most in the combined order); the final update strips
         # them for real via the parse helpers. Then cap the partial so a long
         # stream never trips Slack's msg_too_long.
-        text = _truncate_for_slack(
-            files._strip_file_marker(
-                jobs._strip_job_marker(jobs._strip_spawn_marker(text))
-            )
+        text, postamble = _split_terminal_postamble(text)
+        text = files._strip_file_marker(
+            jobs._strip_job_marker(jobs._strip_spawn_marker(text))
         )
+        text = _truncate_for_slack(text)
+        text = _restore_terminal_postamble(text, postamble)
         # Skip empties (Slack rejects them) and no-op re-posts (a force-flush on a
         # tool_use block_stop carries the SAME text as the text block before it).
         if not text or text == last_text:
@@ -419,6 +442,7 @@ def _run_and_update(
         # `...<<files: a>>\n<<job: cmd>>\n<<spawn: task>>` (spawn line LAST)
         # triggers all three; a marker line out of that order is left mid-text
         # by the earlier strips, i.e. plain prose (the trailing-only rule).
+        text, postamble = _split_terminal_postamble(text)
         text, spawn_task = jobs._parse_spawn_marker(text)
         text, job_cmd = jobs._parse_job_marker(text)
         text, upload_names = files._parse_file_marker(text)
@@ -436,11 +460,12 @@ def _run_and_update(
             spawn_task = jobs._compose_spawn_prompt(
                 spawn_task, "" if forks else history
             )
-        # Cap the body BELOW Slack's 40k chat_update limit AFTER the marker split
+        # Cap the body BELOW Slack's 4k chat_update limit AFTER the marker split
         # (file delivery survives) and BEFORE the notice/footer appends (they
         # survive too); an over-limit final update would otherwise raise
         # msg_too_long and destroy the whole reply.
         text = _truncate_for_slack(text)
+        text = _restore_terminal_postamble(text, postamble)
         # User interrupt: the run settled early. Mark the (partial) reply so the
         # thread reads like a terminal Ctrl-C. token.proc guards the rare non-stream
         # case where the flag was set but nothing was actually killable.
@@ -509,10 +534,12 @@ def _run_and_update(
             # strip after a mid-text marker mention would permanently eat the
             # prose tail. Only a complete trailing marker is removed; a
             # genuinely incomplete trailing marker may stay visible (error path).
-            partial, _ = jobs._parse_spawn_marker(streamed["text"])
+            partial, postamble = _split_terminal_postamble(streamed["text"])
+            partial, _ = jobs._parse_spawn_marker(partial)
             partial, _ = jobs._parse_job_marker(partial)
             partial, _ = files._parse_file_marker(partial)
             partial = _truncate_for_slack(partial.strip())
+            partial = _restore_terminal_postamble(partial, postamble)
             if partial:
                 client.chat_update(
                     channel=channel,
@@ -541,6 +568,22 @@ def _run_and_update(
             logger.exception("failed to post error message")
     finally:
         interrupt.unregister(agent["name"], thread_ts, token)
+        # A message was declined by the busy guard mid-run (see mark_pinged), so
+        # the final reply's in-place edit sits above newer messages; post a NEW
+        # short note so the user sees the run settled. Covers every settle path
+        # (success, error, interrupt).
+        if token.pinged:
+            try:
+                client.chat_postMessage(
+                    channel=channel,
+                    thread_ts=_reply_thread_ts(thread_ts),
+                    text=(
+                        f"{agent['display_name']} finished. "
+                        "See the updated reply above."
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - a Slack hiccup must not raise here
+                logger.warning("failed to post the done note")
 
 
 def _handle(agent, event, client, say):
@@ -612,6 +655,10 @@ def _handle(agent, event, client, say):
     # (handled above, before this guard), so a stuck thread is never wedged.
     token = interrupt.try_register(agent["name"], thread_ts)
     if token is None:
+        # This decline (and the message it answers) now sit BELOW the in-flight
+        # run's placeholder, so the final in-place edit of that placeholder will
+        # land unseen; flag the run so its completion posts a done note.
+        interrupt.mark_pinged(agent["name"], thread_ts)
         post(
             text=(
                 f"{agent['display_name']} is still working on an earlier message "

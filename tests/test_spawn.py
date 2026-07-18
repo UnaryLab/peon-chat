@@ -65,6 +65,18 @@ def test_parse_spawn_marker_extracts_and_strips():
     assert _appmod._strip_spawn_marker("plain text") == "plain text"
 
 
+def test_postamble_does_not_make_mid_text_marker_terminal():
+    if not _HAVE_APP:
+        return
+    assert _appmod is not None
+    from src.slack import handlers
+
+    raw = "quoted example:\n<<spawn: do not run>>\nmore prose\n\nMeow..."
+    body, postamble = handlers._split_terminal_postamble(raw)
+    assert postamble == "Meow..."
+    assert _appmod._parse_spawn_marker(body) == (body, None)
+
+
 def test_job_body_does_not_swallow_trailing_spawn_marker():
     if not _HAVE_APP:
         return
@@ -94,6 +106,21 @@ def test_stream_updater_scrubs_partial_spawn_marker():
     update("working on it\n<<spawn: survey the fi")
     # the partial marker never flashes mid-stream
     assert updates == ["working on it"]
+
+
+def test_stream_updater_scrubs_spawn_marker_before_postamble():
+    if not _HAVE_APP:
+        return
+    assert _appmod is not None
+    updates = []
+
+    class _Client:
+        def chat_update(self, channel=None, ts=None, text=None):
+            updates.append(text)
+
+    update = _appmod._make_stream_updater(_Client(), "C1", "ph-ts", now=lambda: 0.0)
+    update("working on it\n<<spawn: first paragraph\n\nsecond paragraph>>\n\nMeow...")
+    assert updates == ["working on it\n\nMeow..."]
 
 
 # ---------------------------------------------------------------------------
@@ -584,6 +611,47 @@ def test_run_and_update_spawn_marker_fires_after_reply(monkeypatch, tmp_path):
     assert "<<job:" in captured["prompt"]
 
 
+def test_run_and_update_multiline_spawn_before_postamble(monkeypatch, tmp_path):
+    if not _HAVE_APP:
+        return
+    assert _appmod is not None
+    _worker_env(monkeypatch, tmp_path)
+    posted = {}
+    started = []
+    task = "first paragraph\n\n" + "\n".join(f"step {i}" for i in range(60))
+
+    class _Runner:
+        @staticmethod
+        def answer(
+            agent,
+            prompt,
+            prior,
+            overrides=None,
+            on_update=None,
+            cancel=None,
+            on_session=None,
+        ):
+            return f"On it.\n<<spawn: {task}>>\n\nMeow...", "sid-1", {}
+
+    class _Client:
+        def chat_update(self, channel=None, ts=None, text=None):
+            posted["text"] = text
+            return {"ok": True}
+
+    monkeypatch.setattr(_appmod.runners, "get_runner", lambda backend: _Runner)
+    monkeypatch.setattr(
+        _appmod,
+        "_start_spawn",
+        lambda client, agent, channel, thread_ts, body: started.append(body),
+    )
+    _appmod._run_and_update(_Client(), "C1", "TS1", _FILE_AGENT, "hi", "T_postamble")
+
+    assert started == [task]
+    assert "<<spawn:" not in posted["text"]
+    assert "step 59" not in posted["text"]
+    assert "On it.\n\nMeow..." in posted["text"]
+
+
 def test_compose_spawn_prompt_template_cap_and_absent():
     if not _HAVE_APP:
         return
@@ -786,7 +854,8 @@ def test_run_and_update_all_three_markers(monkeypatch, tmp_path):
             on_session=None,
         ):
             return (
-                "All set.\n<<files: plot.png>>\n<<job: sleep 5>>\n<<spawn: summarize>>",
+                "All set.\n<<files: plot.png>>\n<<job: sleep 5>>\n"
+                "<<spawn: summarize>>\n\nMeow...",
                 "sid-1",
                 {},
             )
@@ -811,6 +880,7 @@ def test_run_and_update_all_three_markers(monkeypatch, tmp_path):
     assert "<<spawn:" not in posted["text"]
     assert "<<job:" not in posted["text"]
     assert "<<files:" not in posted["text"]
+    assert "All set.\n\nMeow..." in posted["text"]
     assert len(uploads) == 1
     assert jobs_started == ["sleep 5"]
     assert spawns_started == ["summarize"]

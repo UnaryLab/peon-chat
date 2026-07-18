@@ -438,7 +438,12 @@ for that `(agent, thread)` without starting a new one. It is matched in
   **busy guard**: `_handle` atomically claims the slot with `try_register`
   BEFORE spawning the worker, and a second message while a run is in flight
   gets `None` back and is declined with a short "still working" reply (never
-  two concurrent runs `--resume`-ing one session id). The cron path claims the
+  two concurrent runs `--resume`-ing one session id). The decline also flags the
+  in-flight token (`mark_pinged` sets `token.pinged`): the declined exchange now
+  sits below the run's placeholder, so the final in-place edit of it would land
+  unseen, and the worker therefore posts a short "finished, see the updated
+  reply above" note as a NEW message after the run settles (any settle path;
+  a failed note is logged, never raised). The cron path claims the
   slot the SAME way (`try_register` inside `_run_and_update`): a fire that lands
   while a run is in flight is skipped, its placeholder updated to a "skipped: a
   run is already in progress" note; the unconditional last-writer-wins `register`
@@ -541,11 +546,13 @@ pattern factory (`_greedy_marker_res` in src/slack/jobs.py builds both the job
 and spawn (parse, strip) pairs), so every anchoring rule above -- line-start
 opener, last-occurrence parse, opener-line discrimination, the nested-opener
 carve-out -- applies identically; only what the body MEANS differs (see the
-Subagent spawn block below).
+Subagent spawn block below). A profile's optional exact final `Meow...` line is
+detached before all three delivery markers are parsed and restored afterward;
+without that postamble, parsing is unchanged.
 
 **Marker order (deterministic, tested).** In `_run_and_update` the SPAWN marker
 is parsed FIRST, then the JOB marker, then the FILES marker, all BEFORE the
-39,000-char Slack cap. So a reply ending `<<files: a>>` then `<<job: cmd>>`
+3,800-char Slack body cap. So a reply ending `<<files: a>>` then `<<job: cmd>>`
 then `<<spawn: task>>` (spawn line LAST) triggers all three; a marker line out
 of that order is left mid-text by the earlier strips, i.e. plain prose. All
 three markers are also scrubbed from streamed partials so none flashes
@@ -743,8 +750,8 @@ logs a warning and falls back to the
 default instead of killing the process at import, see `_int_env`; on the
 streaming path this bounds the post-stream
 `proc.wait`, not the whole read), then `chat_update`s the placeholder with the
-result. A finished reply longer than Slack's 40,000-char `chat_update` limit is
-capped by `_truncate_for_slack` (the first 39,000 chars are kept and a
+result. A finished reply longer than Slack's 4,000-char `chat_update` limit is
+capped by `_truncate_for_slack` (the first 3,800 chars are kept and a
 truncation note appended); the `<<files:>>` marker is parsed BEFORE the cap (so
 file delivery survives) and the interrupted label / usage footer are appended
 AFTER it (so they survive too). One run per (agent, thread) at a time: `_handle` claims the thread's

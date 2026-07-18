@@ -217,6 +217,11 @@ class Interrupt:
         # only duck-type .poll()/.send_signal() (a real Popen at runtime, a fake in
         # tests). Kept a plain readable attribute (handlers read token.proc).
         self.proc: Any = None
+        # Set (via interrupt.mark_pinged) when a message was declined by the busy
+        # guard while this run was in flight; the worker then posts a short done
+        # note after the final reply, which otherwise lands as an unnotified
+        # in-place edit of a placeholder now buried above the declined exchange.
+        self.pinged = False
 
     @property
     def requested(self):

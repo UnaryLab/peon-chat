@@ -1,7 +1,7 @@
 """Regression tests for the Slack-layer bug fixes.
 
 One test (or pair) per fix: per-agent dedup, directed-mention ownership, the
-cron busy-guard/threaded-fire/boundary-sleep trio, 40k truncation, the
+cron busy-guard/threaded-fire/boundary-sleep trio, 4k truncation, the
 file_share subtype, the download timeout, multi-line control phrases, the
 transcript tail, Vixie N/S steps, the trailing-only <<files:>> marker, the
 group-DM manifest entries, duplicate registry names, and the bot-id cache.
@@ -335,6 +335,8 @@ def test_long_reply_truncated_keeps_footer_and_files(monkeypatch, tmp_path):
 
     class _Client:
         def chat_update(self, channel=None, ts=None, text=None):
+            if len(text) > 4_000:
+                raise RuntimeError("msg_too_long")
             posted["text"] = text
             return {"ok": True}
 
@@ -347,7 +349,7 @@ def test_long_reply_truncated_keeps_footer_and_files(monkeypatch, tmp_path):
     handlers._run_and_update(_Client(), "C1", "TS1", _FILE_AGENT, "go", "T_long")
 
     final = posted["text"]
-    assert len(final) <= 40_000  # under Slack's msg_too_long ceiling
+    assert len(final) <= 4_000  # under Slack chat.update's msg_too_long ceiling
     assert "truncated: full reply too long for Slack" in final
     assert "<<files:" not in final  # marker parsed/stripped BEFORE truncation
     assert final.rstrip().endswith("500 tok")  # the usage footer survived
@@ -565,3 +567,82 @@ def test_registry_rejects_duplicate_agent_names(tmp_path):
     )
     with pytest.raises(ValueError, match="duplicates agent name"):
         agents._load_registry(str(path))
+
+
+# --- 13. a busy decline makes the run's completion post a done note --------------
+
+
+def test_busy_decline_posts_done_note_on_completion(monkeypatch, tmp_path):
+    # The final reply is a chat_update of the placeholder; a message declined by
+    # the busy guard sits BELOW that placeholder, so the edit lands unseen. The
+    # decline flags the in-flight token, and the worker then posts a NEW "done"
+    # note after the final update. A run with no decline posts no extra message.
+    if not _HAVE_APP:
+        return
+    assert _appmod is not None
+    from src.slack import handlers, interrupt
+
+    sessions = str(tmp_path / "sessions.json")
+    overrides = str(tmp_path / "overrides.json")
+    monkeypatch.setattr(claude_runner, "_sessions_path", lambda: sessions)
+    monkeypatch.setattr(claude_runner, "_overrides_path", lambda: overrides)
+    monkeypatch.setenv("WORKDIR_BASE", str(tmp_path / "wd"))
+
+    class _Runner:
+        @staticmethod
+        def answer(
+            agent,
+            prompt,
+            prior,
+            overrides=None,
+            on_update=None,
+            cancel=None,
+            on_session=None,
+        ):
+            return "the result", "sid-1", {}
+
+    calls = []
+
+    class _Client:
+        def chat_update(self, channel=None, ts=None, text=None):
+            calls.append(("update", text))
+            return {"ok": True}
+
+        def chat_postMessage(self, channel=None, thread_ts=None, text=None):
+            calls.append(("post", thread_ts, text))
+            return {"ok": True}
+
+    monkeypatch.setattr(_appmod.runners, "get_runner", lambda backend: _Runner)
+
+    # A run is in flight (the slot is held, as _handle does before its worker).
+    token = interrupt.try_register(_FILE_AGENT["name"], "1111.0001")
+    assert token is not None
+
+    # A second message arrives mid-run: _handle declines it and flags the token.
+    event = {
+        "channel": "C1",
+        "ts": "1111.0002",
+        "thread_ts": "1111.0001",
+        "text": "done?",
+        "client_msg_id": f"MSG-{uuid.uuid4()}",
+    }
+    say = _FakeSay()
+    handlers._handle(_FILE_AGENT, event, object(), say)
+    assert "still working" in say.posts[0]["text"]
+
+    # The in-flight run completes: final update, THEN the done note as a new post.
+    handlers._run_and_update(
+        _Client(), "C1", "PH1", _FILE_AGENT, "p", "1111.0001", token=token
+    )
+    assert calls[-1][0] == "post"
+    assert calls[-1][1] == "1111.0001"  # posted into the thread, not flat
+    assert "see the updated reply above" in calls[-1][2].lower()
+    assert calls[-2][0] == "update" and calls[-2][1].startswith("the result")
+
+    # No decline during the run: no extra post.
+    calls.clear()
+    token2 = interrupt.try_register(_FILE_AGENT["name"], "T_note_free")
+    handlers._run_and_update(
+        _Client(), "C1", "PH2", _FILE_AGENT, "p", "T_note_free", token=token2
+    )
+    assert [c[0] for c in calls] == ["update"]

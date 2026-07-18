@@ -76,6 +76,20 @@ def try_register(agent_name, thread_ts):
     return token
 
 
+def mark_pinged(agent_name, thread_ts):
+    """Flag the in-flight run for this thread: a message arrived and was declined
+    by the busy guard while it was running. The worker reads token.pinged after
+    the final reply lands and posts a short done note as a NEW message (the
+    reply itself is an in-place edit of the placeholder, which Slack does not
+    notify on and which now sits above the declined exchange). No-op when
+    nothing is running.
+    """
+    with _LOCK:
+        token = _RUNNING.get((agent_name, thread_ts))
+        if token is not None:
+            token.pinged = True
+
+
 def unregister(agent_name, thread_ts, token):
     """Drop this run's token, but only if a newer run has not replaced it."""
     with _LOCK:
