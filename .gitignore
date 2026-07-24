@@ -2,6 +2,7 @@
 sessions.json
 overrides.json
 crons.json
+jobs.json
 peon-chat.log
 __pycache__/
 *.pyc
