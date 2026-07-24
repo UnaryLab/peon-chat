@@ -1,6 +1,6 @@
-# peon architecture
+# peon-chat architecture
 
-Internals and design of the peon process: how the package is laid out, how
+Internals and design of the peon-chat process: how the package is laid out, how
 the two CLI backends are abstracted, the exact verified CLI invocations, how
 independent per-thread contexts are guaranteed, and how the async, non-blocking
 message handling works.
@@ -10,7 +10,7 @@ See the [README](README.md) for installation and usage.
 ## Layout
 
 ```
-peon/                          project root
+peon-chat/                          project root
   agents.json                  the agent definitions (SINGLE SOURCE OF TRUTH)
   quotes.json                  optional placeholder quotes (missing/invalid = default "thinking..." text)
   src/                         the importable package (run as `python -m src`)
@@ -197,7 +197,7 @@ claude -p --output-format json --resume <thread uuid> --fork-session [--agent <x
 `--fork-session` is verified against claude CLI 2.1.201 (`claude --help`:
 "When resuming, create a new session ID instead of reusing the original (use
 with --resume or --continue)"): the run inherits the session's full hidden
-conversation state but writes to a NEW session id the CLI mints, which peon
+conversation state but writes to a NEW session id the CLI mints, which peon-chat
 never reads or persists; the thread's stored id is untouched and stays
 resumable (smoke-verified: after a fork, resuming the original id still
 recalls its own turns). Safe by construction: the spawn launches only AFTER
@@ -292,8 +292,8 @@ Slack thread is a new key, hence a fresh context. (See the
 `get_or_create_session` tests in `tests/test_build_command.py` and
 `tests/test_env.py` for the guarantee.)
 
-**Persist-at-start (resilient to interruption).** peon runs under launchd with
-`KeepAlive=true`, so a machine sleep / network drop / crash relaunches peon and
+**Persist-at-start (resilient to interruption).** peon-chat runs under launchd with
+`KeepAlive=true`, so a machine sleep / network drop / crash relaunches peon-chat and
 kills the in-flight `claude` child. claude's id is minted up front, so the worker
 passes an `on_session` callback that `set_session`s the id the INSTANT it is
 minted, BEFORE the subprocess runs (`claude.answer`), not only after a clean run.
@@ -564,7 +564,7 @@ thread), the worker resolves `_start_job` through the app facade and spawns
 `/bin/sh -c <cmd>` with `start_new_session=True` (its own session, so it
 survives the turn AND this process), `stdin=DEVNULL`, and stdout+stderr into
 `job-<id>.log` inside the thread workdir (also the cwd). The command runs fully
-unsandboxed like every run in peon. The entry `{id, agent, channel, thread_ts,
+unsandboxed like every run in peon-chat. The entry `{id, agent, channel, thread_ts,
 pid, logfile, cmd, started_ts}` is persisted to `jobs.json` (thread_ts is the
 conversation KEY, possibly a DM channel id; `started_ts` is the epoch-seconds
 spawn time the timeout window runs from, stamped inside `store.add_job`), and a

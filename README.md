@@ -1,4 +1,4 @@
-# peon
+# peon-chat
 
 A single always-on Python process that runs several Slack bot personas, each
 backed by a headless CLI call (`claude` OR `codex`), with INDEPENDENT
@@ -68,8 +68,8 @@ claude `--permission-mode bypassPermissions`.)
 
 1. **Clone the private repo** (private access via SSH key or PAT is required):
    ```sh
-   git clone git@github.com:<your-org>/peon.git
-   cd peon
+   git clone git@github.com:<your-org>/peon-chat.git
+   cd peon-chat
    ```
 2. **Create and activate the env** (Python 3.12):
    ```sh
@@ -194,14 +194,14 @@ Each agent is its own Slack bot that you address by name.
    agent from a self-contained task prompt. A claude-backed agent's subagent
    INHERITS the whole conversation (it forks the thread's session; the
    original is untouched); a codex-backed agent's subagent starts fresh and
-   peon prepends the thread's recent Slack transcript to the spawn prompt,
+   peon-chat prepends the thread's recent Slack transcript to the spawn prompt,
    capped, so it has the conversation to refer to even when the prompt is
    terse (a flat 1:1 DM or a scheduled run has no transcript and the task
    goes alone). For a
    verbatim shell command you
    want run as-is (a sweep, a big build, a long download) it uses
    `<<job: ...>>` naming one shell command. Either way the work is started
-   detached in the thread's workdir (it keeps running even if peon restarts),
+   detached in the thread's workdir (it keeps running even if peon-chat restarts),
    and when it finishes the agent posts a follow-up in the same conversation
    summarizing the result (a spawn's final answer, or a job's exit code and
    output tail; the raw note is posted directly if the agent is mid-run at
@@ -292,13 +292,13 @@ though it is read early at import time). A malformed `AGENT_TIMEOUT_MIN` (e.g.
 `90m`) logs a warning and the default is used; it never kills the process at
 startup.
 
-**Skills that need extra environment or web access.** peon spawns the CLI with no
+**Skills that need extra environment or web access.** peon-chat spawns the CLI with no
 explicit `env=`, so every variable in `.env` is inherited by the `claude`/`codex`
 subprocess (and any skill it runs). Put any value a skill expects from your shell
 but that a service manager (launchd/systemd) does NOT inherit here, rather than
 hardcoding it into the OS-specific `deploy/` templates: e.g. `OBSIDIAN_VAULT_PATH`
 for the `obsidian-*` research skills, set to your vault root (the folder
-containing `research/`). Web tools are gated by the CLI itself, not by peon, and a
+containing `research/`). Web tools are gated by the CLI itself, not by peon-chat, and a
 headless run cannot prompt for permission, so pre-approve them once: for
 Claude, add `WebSearch` / `WebFetch` to `permissions.allow` in
 `~/.claude/settings.json`; for Codex, set `[tools] web_search = true` in
@@ -354,7 +354,7 @@ connections in place:
 
 ```sh
 kill -HUP <pid>            # or, under systemd:
-systemctl --user reload peon   # the unit maps reload -> SIGHUP
+systemctl --user reload peon-chat   # the unit maps reload -> SIGHUP
 ```
 
 **What happens.** The process re-reads `agents.json` + `.env` and acts on only
@@ -397,29 +397,29 @@ marked paths (`WorkingDirectory` and the conda path in `ExecStart`), then enable
 it:
 
 ```sh
-cp deploy/peon.service ~/.config/systemd/user/
-# edit ~/.config/systemd/user/peon.service: WorkingDirectory + ExecStart conda path
+cp deploy/peon-chat.service ~/.config/systemd/user/
+# edit ~/.config/systemd/user/peon-chat.service: WorkingDirectory + ExecStart conda path
 systemctl --user daemon-reload
-systemctl --user enable --now peon
+systemctl --user enable --now peon-chat
 ```
 
-Manage it with `systemctl --user status|reload|restart|stop peon`
+Manage it with `systemctl --user status|reload|restart|stop peon-chat`
 (`reload` sends SIGHUP for a hot config reload, `restart` is for code changes)
-and follow logs with `journalctl --user -u peon -f`.
+and follow logs with `journalctl --user -u peon-chat -f`.
 
 **macOS (`launchd`), reboot-persistent always-on:** copy the shipped LaunchAgent
-to `~/Library/LaunchAgents/com.unarylab.peon.plist`, edit it for your machine,
+to `~/Library/LaunchAgents/com.unarylab.peon-chat.plist`, edit it for your machine,
 then load it:
 
 ```sh
-cp deploy/com.unarylab.peon.plist ~/Library/LaunchAgents/com.unarylab.peon.plist
-# edit ~/Library/LaunchAgents/com.unarylab.peon.plist (see below)
-launchctl load -w ~/Library/LaunchAgents/com.unarylab.peon.plist
+cp deploy/com.unarylab.peon-chat.plist ~/Library/LaunchAgents/com.unarylab.peon-chat.plist
+# edit ~/Library/LaunchAgents/com.unarylab.peon-chat.plist (see below)
+launchctl load -w ~/Library/LaunchAgents/com.unarylab.peon-chat.plist
 ```
 
 Edit the plist for your machine:
 
-- Set `WorkingDirectory` to your repo path (e.g. `/Users/<you>/Projects/peon`).
+- Set `WorkingDirectory` to your repo path (e.g. `/Users/<you>/Projects/peon-chat`).
 - Make the binaries resolvable: launchd runs with a minimal `PATH`
   (`/usr/bin:/bin:/usr/sbin:/sbin`), so the template's `/usr/bin/env conda` and
   the bare `claude`/`codex` the runners spawn both need an
@@ -436,17 +436,17 @@ Edit the plist for your machine:
 
 Manage it:
 
-- **Status:** `launchctl list | grep peon` (a `Status` of `0` means healthy).
+- **Status:** `launchctl list | grep peon-chat` (a `Status` of `0` means healthy).
 - **Hot config reload (no restart):** after editing `agents.json`/`.env`, send the
   running process `SIGHUP` with `kill -HUP <pid>` (the process logs its current HUP
   PID on startup; see [Hot-reload (SIGHUP)](#hot-reload-sighup)).
 - **Full restart (for code changes):**
-  `launchctl kickstart -k gui/$(id -u)/com.unarylab.peon`.
-- **Stop / disable:** `launchctl unload -w ~/Library/LaunchAgents/com.unarylab.peon.plist`.
+  `launchctl kickstart -k gui/$(id -u)/com.unarylab.peon-chat`.
+- **Stop / disable:** `launchctl unload -w ~/Library/LaunchAgents/com.unarylab.peon-chat.plist`.
 - **Logs:** wherever you pointed `StandardOutPath` (e.g. `peon.log`).
 
-This is the macOS equivalent of the `systemd` unit above; `deploy/peon.service` is
-the Linux always-on option and `deploy/com.unarylab.peon.plist` is the macOS one.
+This is the macOS equivalent of the `systemd` unit above; `deploy/peon-chat.service` is
+the Linux always-on option and `deploy/com.unarylab.peon-chat.plist` is the macOS one.
 
 ## Self-check
 
