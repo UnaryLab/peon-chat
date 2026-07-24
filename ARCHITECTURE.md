@@ -143,7 +143,7 @@ thread_ts)` for **every** backend, so contexts stay independent (see below).
 all empirically verified to work):
 
 The model and effort come from each agent's `agents.json` entry. The shipped
-claude agents pin `"model": "claude-opus-4-8[1m]"`, so `--model claude-opus-4-8[1m]`
+claude agents pin `"model": "claude-opus-5"`, so `--model claude-opus-5`
 appears in every argv; if an entry omitted `model`, code falls back to that same
 pin (and logs a warning). Reasoning effort is the entry's `effort` field (accepted
 values `low`, `medium`, `high`, `xhigh`, `max`), which adds `--effort <level>`
@@ -155,17 +155,17 @@ there is no env-var override:
 
 ```
 # Aristotle, new thread:
-claude -p --output-format json --session-id <uuid> --agent unarylab-research:research_manager --permission-mode bypassPermissions --model claude-opus-4-8[1m] --effort high "<prompt>"
+claude -p --output-format json --session-id <uuid> --agent unarylab-research:research_manager --permission-mode bypassPermissions --model claude-opus-5 --effort high "<prompt>"
 # Aristotle, continuing the same thread:
-claude -p --output-format json --resume <uuid> --agent unarylab-research:research_manager --permission-mode bypassPermissions --model claude-opus-4-8[1m] --effort high "<prompt>"
+claude -p --output-format json --resume <uuid> --agent unarylab-research:research_manager --permission-mode bypassPermissions --model claude-opus-5 --effort high "<prompt>"
 
 # Brunel, new / resume (same shape, different agent):
-claude -p --output-format json --session-id <uuid> --agent unarylab-research:project_manager --permission-mode bypassPermissions --model claude-opus-4-8[1m] --effort high "<prompt>"
-claude -p --output-format json --resume     <uuid> --agent unarylab-research:project_manager --permission-mode bypassPermissions --model claude-opus-4-8[1m] --effort high "<prompt>"
+claude -p --output-format json --session-id <uuid> --agent unarylab-research:project_manager --permission-mode bypassPermissions --model claude-opus-5 --effort high "<prompt>"
+claude -p --output-format json --resume     <uuid> --agent unarylab-research:project_manager --permission-mode bypassPermissions --model claude-opus-5 --effort high "<prompt>"
 
 # Cicero (general/default run: NO --agent flag):
-claude -p --output-format json --session-id <uuid> --permission-mode bypassPermissions --model claude-opus-4-8[1m] --effort high "<prompt>"
-claude -p --output-format json --resume     <uuid> --permission-mode bypassPermissions --model claude-opus-4-8[1m] --effort high "<prompt>"
+claude -p --output-format json --session-id <uuid> --permission-mode bypassPermissions --model claude-opus-5 --effort high "<prompt>"
+claude -p --output-format json --resume     <uuid> --permission-mode bypassPermissions --model claude-opus-5 --effort high "<prompt>"
 ```
 
 `--output-format json` makes stdout a single JSON object; we read the `result`

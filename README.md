@@ -35,7 +35,7 @@ Per-agent **model** and **effort** come SOLELY from the `model`/`effort` fields 
 Valid values: claude `effort` is one of `low`, `medium`, `high`, `xhigh`, `max`;
 codex `effort` is one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
 (subject to the active model). If an entry omits a field, code applies a single
-fallback (claude model -> `claude-opus-4-8[1m]`; everything else -> omitted) and
+fallback (claude model -> `claude-opus-5`; everything else -> omitted) and
 logs a warning.
 
 Adding a fifth agent on either backend is a **one-entry change** in `agents.json`
@@ -311,7 +311,7 @@ Four steps:
 1. Append **one entry** to `agents.json`. For a claude agent (use `"backend":
    "claude"`):
    ```json
-   {"name": "euclid", "display_name": "Euclid", "backend": "claude", "claude_agent": "unarylab-research:some_other_agent", "model": "claude-opus-4-8[1m]", "effort": "high"}
+   {"name": "euclid", "display_name": "Euclid", "backend": "claude", "claude_agent": "unarylab-research:some_other_agent", "model": "claude-opus-5", "effort": "high"}
    ```
    (set `"claude_agent": null` for a general run, no `--agent` flag). For a
    Codex-backed agent (like Dijkstra), use `"backend": "codex"` and omit

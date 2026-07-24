@@ -38,7 +38,7 @@ PROMPT = "what is 2+2?"
 # The shipped claude agents pin this model in agents.json; the default-path tests
 # use agent dicts with no "model" field, so build_command falls back to this same
 # pin. Either way every claude argv carries --model <MODEL> just before the prompt.
-MODEL = "claude-opus-4-8[1m]"
+MODEL = "claude-opus-5"
 
 # agents.json is now the SINGLE source of truth for model/effort: agents.resolve
 # reads ONLY the agent dict's field (with one code-level fallback), with NO env-var
@@ -215,7 +215,7 @@ class _FakeSay:
 
 
 # The full aristotle entry plus a model/effort the !model/!effort/!reset tests read.
-_CONTROL_AGENT = {**_FILE_AGENT, "model": "claude-opus-4-8[1m]", "effort": "xhigh"}
+_CONTROL_AGENT = {**_FILE_AGENT, "model": "claude-opus-5", "effort": "xhigh"}
 
 
 class _FakeBoltApp:

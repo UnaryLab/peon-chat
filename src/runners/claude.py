@@ -47,16 +47,17 @@ DEFAULT_TIMEOUT_MIN = agent_timeout_min()
 
 # Model and reasoning effort come SOLELY from the agent's agents.json entry
 # (resolved in build_command via agents.resolve). There is NO global env-var layer.
-# Model carries one code-level fallback default, claude-opus-4-8[1m], used only if
+# Model carries one code-level fallback default, claude-opus-5, used only if
 # an entry is missing its "model" (agents.resolve logs a warning then); every
 # shipped entry sets it, so the fallback should not fire and the default-path argv
-# stays --model claude-opus-4-8[1m]. Effort falls back to "" (omit the flag).
+# stays --model claude-opus-5. Effort falls back to "" (omit the flag).
 # Values are passed through unvalidated; the claude CLI validates them.
-_CLAUDE_MODEL_FALLBACK = "claude-opus-4-8[1m]"
+_CLAUDE_MODEL_FALLBACK = "claude-opus-5"
 
 # Context-window sizes (tokens) used as the denominator for the context-usage
 # percentage in meta. A model id carrying the "[1m]" suffix (e.g.
-# "claude-opus-4-8[1m]") has a 1,000,000-token window; otherwise 200,000. The
+# "claude-opus-4-8[1m]") or an opus-5 id (1M by default, no suffix) has a
+# 1,000,000-token window; otherwise 200,000. The
 # model is resolved the SAME way build_command resolves it, so the percent
 # reflects the model actually used.
 _CONTEXT_WINDOW_1M = 1_000_000
@@ -122,7 +123,7 @@ def build_command(
       full access:        + ["--permission-mode", "bypassPermissions"]  (always,
                             unconditional: access is hardcoded-full, no confinement)
       model:              + ["--model", model]   (from agents.json "model", else
-                            the claude-opus-4-8[1m] fallback; always present
+                            the claude-opus-5 fallback; always present
                             since the default is non-empty)
       reasoning effort:   + ["--effort", eff]   (from agents.json "effort";
                             omitted when absent/empty; not validated here, the
@@ -214,14 +215,16 @@ def _context_window_for(agent, overrides=None):
 
     Resolve the model the SAME way build_command does (including a per-thread
     model override, so the usage-footer percentage tracks the model actually
-    used), then pick 1M if the id carries the "[1m]" suffix (substring match),
-    else the 200k default. This is the denominator for the context-usage
-    percentage; it does NOT affect argv.
+    used), then pick 1M if the id carries the "[1m]" suffix or is an opus-5
+    (1M by default, no suffix), else the 200k default. This is the denominator
+    for the context-usage percentage; it does NOT affect argv.
     """
-    model = agents.resolve(agent, "model", _CLAUDE_MODEL_FALLBACK)
+    model = agents.resolve(agent, "model", _CLAUDE_MODEL_FALLBACK) or ""
     if overrides and overrides.get("model"):
         model = overrides["model"]
-    return _CONTEXT_WINDOW_1M if "[1m]" in (model or "") else _CONTEXT_WINDOW_DEFAULT
+    if "[1m]" in model or "opus-5" in model:
+        return _CONTEXT_WINDOW_1M
+    return _CONTEXT_WINDOW_DEFAULT
 
 
 def _meta_from_payload(payload, agent, overrides=None):

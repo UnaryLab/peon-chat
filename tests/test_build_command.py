@@ -240,7 +240,7 @@ def test_build_command_model_default_when_unset(monkeypatch):
     # No agents.json "model" field => the pinned code-level fallback is used.
     _clear_model_effort_env(monkeypatch)
     argv = claude_runner.build_command(BRUNEL, PROMPT, SID, True)
-    assert argv[argv.index("--model") + 1] == MODEL  # claude-opus-4-8[1m]
+    assert argv[argv.index("--model") + 1] == MODEL  # claude-opus-5
 
 
 def test_build_command_model_from_agents_json_field(monkeypatch):

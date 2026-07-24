@@ -44,7 +44,7 @@ fields in agents.json. There is NO global env-var layer for them. `resolve`
 below reads the agent's field and, only if it is missing/empty, returns a single
 code-level fallback default (logging a warning, since every shipped entry sets
 both fields, so the fallback should not fire). Defaults per field:
-  - claude model:  agents.json "model"  else "claude-opus-4-8[1m]"
+  - claude model:  agents.json "model"  else "claude-opus-5"
   - claude effort: agents.json "effort" else "" (omit the flag)
   - codex model:   agents.json "model"  else "" (omit -m)
   - codex effort:  agents.json "effort" else "" (omit the override)
