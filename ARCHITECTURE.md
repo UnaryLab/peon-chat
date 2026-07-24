@@ -478,11 +478,11 @@ reach the bots.
 Each run gets a per-thread workdir as its cwd. The worker injects
 `_workdir = get_workdir(agent, thread)` into `overrides`, and both runners set the
 subprocess cwd to it. `get_workdir` builds the path under `WORKDIR_BASE` (default
-`~/Projects/.peon-workdirs`), namespaced by agent + thread, and creates it on
+`~/Projects/.peon-chat-workdirs`), namespaced by agent + thread, and creates it on
 demand. The default base is an **absolute path OUTSIDE this repo** so a run's
 default cwd is never the framework source; `get_workdir` always returns an
 ABSOLUTE path (the subprocess cwd needs one), so the per-thread workdir lives at
-`<home>/Projects/.peon-workdirs/<agent>/<thread>`. Set `WORKDIR_BASE` to override.
+`<home>/Projects/.peon-chat-workdirs/<agent>/<thread>`. Set `WORKDIR_BASE` to override.
 
 The workdir is the run's cwd/home, not a confinement boundary (the run is
 unsandboxed). Its purpose is the outbound file flow: a run delivers files only by

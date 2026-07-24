@@ -58,7 +58,7 @@ import json
 import logging
 import os
 
-logger = logging.getLogger("peon")
+logger = logging.getLogger("peon-chat")
 
 # Required keys every agents.json entry must carry. claude_agent/model/effort are
 # optional here: claude_agent defaults to "no --agent", and model/effort fall back

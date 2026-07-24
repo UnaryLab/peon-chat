@@ -2,7 +2,7 @@
 sessions.json
 overrides.json
 crons.json
-peon.log
+peon-chat.log
 __pycache__/
 *.pyc
 .pytest_cache/

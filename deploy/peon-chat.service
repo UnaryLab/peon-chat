@@ -11,8 +11,8 @@ WorkingDirectory=%h/Projects/peon-chat
 # Linux laptop variant: uncomment this ExecStart to block system sleep and
 # lid-close suspend while peon-chat is running long surveys. `systemd-inhibit` is
 # Linux-only; macOS uses deploy/com.unarylab.peon-chat.plist with caffeinate.
-# ExecStart=/usr/bin/systemd-inhibit --what=sleep:handle-lid-switch --why="peon-chat long-running surveys" --mode=block /usr/bin/env conda run -n peon python -m src
-ExecStart=/usr/bin/env conda run -n peon python -m src
+# ExecStart=/usr/bin/systemd-inhibit --what=sleep:handle-lid-switch --why="peon-chat long-running surveys" --mode=block /usr/bin/env conda run -n peon-chat python -m src
+ExecStart=/usr/bin/env conda run -n peon-chat python -m src
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 # Wait 30s between relaunches so a crash into a still-broken network does not

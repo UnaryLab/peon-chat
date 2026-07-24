@@ -574,7 +574,7 @@ def _persist(on_session, session_id):
     """Fire the persist-the-session-id callback (if any), swallowing any error.
 
     Called the moment a NEW session id is minted, BEFORE the subprocess starts, so
-    a run interrupted mid-flight (peon hard-killed by launchd on sleep/network drop)
+    a run interrupted mid-flight (peon-chat hard-killed by launchd on sleep/network drop)
     still leaves a resumable id in the store rather than orphaning a half-written
     transcript. A store hiccup must never abort the run, so errors are swallowed
     (mirrors safe_on_update); the caller also persists the returned id after a clean

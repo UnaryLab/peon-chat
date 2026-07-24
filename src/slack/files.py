@@ -26,7 +26,7 @@ import urllib.request
 from src import store
 from src.runners import claude_runner
 
-logger = logging.getLogger("peon")
+logger = logging.getLogger("peon-chat")
 
 # Dirs the outbound resolver must never descend into (tool caches, VCS, venvs).
 # Pruned in-place during os.walk so their contents are never even stat'd.
@@ -162,7 +162,7 @@ def _attachments_dir(thread_ts):
     place. Byte-identical for any real Slack thread_ts (digits + dot).
     """
     safe = store._safe_token(thread_ts)
-    path = os.path.join(tempfile.gettempdir(), "peon-files", safe)
+    path = os.path.join(tempfile.gettempdir(), "peon-chat-files", safe)
     os.makedirs(path, exist_ok=True)
     return path
 

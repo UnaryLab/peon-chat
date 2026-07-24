@@ -23,7 +23,7 @@ from src.runners import claude_runner, codex_runner
 
 from . import control, files, interrupt, jobs, quotes, usage
 
-logger = logging.getLogger("peon")
+logger = logging.getLogger("peon-chat")
 
 # Matches a Slack user mention like <@U123ABC> so we can strip the bot tag.
 MENTION_RE = re.compile(r"<@[A-Z0-9]+>")

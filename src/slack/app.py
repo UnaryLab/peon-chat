@@ -20,7 +20,7 @@ Slack installed. Importing this module has NO side effects and needs NO tokens
 or network: all App construction happens inside main().
 
 Run always-on (loads .env if present):
-    conda run -n peon python -m src
+    conda run -n peon-chat python -m src
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s:%(name)s:%(message)s",
 )
-logger = logging.getLogger("peon")
+logger = logging.getLogger("peon-chat")
 
 # Set by the SIGHUP handler, consumed by the main reload loop. Module-level so the
 # (minimal) signal handler can flip it without touching any heavy state.
@@ -307,7 +307,7 @@ def main():
         logger.info("started Socket Mode connection for %s", agent["display_name"])
 
     logger.info(
-        "peon running with %d agent(s): %s",
+        "peon-chat running with %d agent(s): %s",
         len(startable),
         ", ".join(a["display_name"] for a in startable),
     )

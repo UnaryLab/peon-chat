@@ -34,7 +34,7 @@ from datetime import datetime
 
 from src import agents, store
 
-logger = logging.getLogger("peon")
+logger = logging.getLogger("peon-chat")
 
 # Per-field allowed numeric ranges (inclusive), in field order.
 _CRON_FIELD_RANGES = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))

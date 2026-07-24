@@ -73,8 +73,8 @@ claude `--permission-mode bypassPermissions`.)
    ```
 2. **Create and activate the env** (Python 3.12):
    ```sh
-   conda create -n peon python=3.12 -y
-   conda activate peon
+   conda create -n peon-chat python=3.12 -y
+   conda activate peon-chat
    ```
 3. **Install dependencies:**
    ```sh
@@ -94,7 +94,7 @@ claude `--permission-mode bypassPermissions`.)
    `model`/`effort` live in `agents.json`.
 5. **Run it:**
    ```sh
-   conda run -n peon python -m src
+   conda run -n peon-chat python -m src
    ```
    For a real always-on deployment (systemd / launchd / nohup), see
    [Running always-on](#running-always-on).
@@ -250,7 +250,7 @@ FULLY UNSANDBOXED (claude `--permission-mode bypassPermissions`, codex
 `-s danger-full-access`): any Slack-reachable agent has full read/write access to
 the host machine (any path, any command) with no approval step. This is deliberate
 for a personal/lab deployment; restrict who can reach the bots accordingly. Each
-thread runs in its own per-thread workdir (default `~/Projects/.peon-workdirs`, set
+thread runs in its own per-thread workdir (default `~/Projects/.peon-chat-workdirs`, set
 `WORKDIR_BASE` to override) as the run's cwd, so files it produces are uploaded
 back into the thread. `WORKDIR_BASE` is set in `.env` (see `.env.example`);
 `SHOW_USAGE` and `STREAM_OUTPUT` are code-level toggles that default ON and are
@@ -389,7 +389,7 @@ unit.
 **Quick / portable (Linux or macOS), no files:**
 
 ```sh
-nohup conda run -n peon python -m src > peon.log 2>&1 &
+nohup conda run -n peon-chat python -m src > peon-chat.log 2>&1 &
 ```
 
 **Linux (`systemd --user`):** copy the shipped unit into place, edit the two
@@ -431,7 +431,7 @@ Edit the plist for your machine:
   what makes it survive reboots), and `ThrottleInterval` is 30s (no relaunch
   hot-loop after a crash).
 - To log to a file, add `StandardOutPath` / `StandardErrorPath` keys (e.g.
-  `peon.log`). Runtime config belongs in `.env`, not the plist (see the
+  `peon-chat.log`). Runtime config belongs in `.env`, not the plist (see the
   template's comments).
 
 Manage it:
@@ -443,7 +443,7 @@ Manage it:
 - **Full restart (for code changes):**
   `launchctl kickstart -k gui/$(id -u)/com.unarylab.peon-chat`.
 - **Stop / disable:** `launchctl unload -w ~/Library/LaunchAgents/com.unarylab.peon-chat.plist`.
-- **Logs:** wherever you pointed `StandardOutPath` (e.g. `peon.log`).
+- **Logs:** wherever you pointed `StandardOutPath` (e.g. `peon-chat.log`).
 
 This is the macOS equivalent of the `systemd` unit above; `deploy/peon-chat.service` is
 the Linux always-on option and `deploy/com.unarylab.peon-chat.plist` is the macOS one.
@@ -456,5 +456,5 @@ tests run offline and mocked: no Slack connection and no real `claude`/`codex`
 calls.
 
 ```sh
-conda run -n peon python -m pytest tests/ -q
+conda run -n peon-chat python -m pytest tests/ -q
 ```

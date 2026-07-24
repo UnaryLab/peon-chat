@@ -28,7 +28,7 @@ The sibling `<<spawn: <task prompt>>>` marker spawns a detached one-shot CLI
 SUBAGENT run riding the same machinery; _start_spawn tells the full spawn story
 (and _finish_job its result delivery).
 
-The command runs fully unsandboxed, like every run in peon (the documented
+The command runs fully unsandboxed, like every run in peon-chat (the documented
 security posture); the workdir is its cwd, not a confinement boundary.
 
 Two guardrails: a per-job TIMEOUT (AGENT_TIMEOUT_MIN, the same knob that bounds
@@ -62,7 +62,7 @@ from src.runners.common import _int_env, agent_timeout_min
 
 from . import interrupt
 
-logger = logging.getLogger("peon")
+logger = logging.getLogger("peon-chat")
 
 # Trailing-only marker pair, OWNED here (the `<<files:>>` pair keeps
 # files._trailing_marker_res). The files pattern tempers its body on ">>",
@@ -208,7 +208,7 @@ def _parse_spawn_marker(text):
 def _compose_spawn_prompt(task, transcript):
     """Prepend the dispatching turn's Slack transcript to a spawn task prompt.
 
-    The subagent runs with a FRESH session and no thread access, so peon
+    The subagent runs with a FRESH session and no thread access, so peon-chat
     deterministically hands it the transcript the turn already fetched (never
     re-fetched): even a lazy task prompt ("run the comparison discussed
     above") has the conversation to refer to. Plain prompt text, identical

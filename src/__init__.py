@@ -1,4 +1,4 @@
-"""peon: always-on multi-agent Slack bots, one Slack app per agent.
+"""peon-chat: always-on multi-agent Slack bots, one Slack app per agent.
 
 Importing this package has NO side effects and needs NO tokens or network.
 Module layout:

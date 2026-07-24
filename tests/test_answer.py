@@ -64,7 +64,7 @@ def test_claude_answer_mints_uuid_when_no_prior():
 
 def test_claude_answer_persists_session_before_subprocess_runs(tmp_path):
     # Fix 1: the freshly minted id is persisted (via on_session) the MOMENT it's
-    # minted, BEFORE the subprocess runs, so a run killed mid-flight (peon
+    # minted, BEFORE the subprocess runs, so a run killed mid-flight (peon-chat
     # hard-killed by launchd) still leaves a resumable id. We assert the store has
     # the id even though the fake subprocess raises mid-run.
     store = str(tmp_path / "sessions.json")
@@ -75,7 +75,7 @@ def test_claude_answer_persists_session_before_subprocess_runs(tmp_path):
         claude_runner.set_session("brunel", "T1", sid, path=store)
 
     def _boom(*a, **k):
-        raise RuntimeError("peon was hard-killed mid-run")
+        raise RuntimeError("peon-chat was hard-killed mid-run")
 
     with mock.patch("src.runners.claude_runner.subprocess.run", side_effect=_boom):
         try:

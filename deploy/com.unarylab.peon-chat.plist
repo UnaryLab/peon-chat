@@ -10,7 +10,7 @@
   <array>
     <string>/usr/bin/caffeinate</string><string>-i</string><string>--</string>
     <string>/usr/bin/env</string>
-    <string>conda</string><string>run</string><string>-n</string><string>peon</string>
+    <string>conda</string><string>run</string><string>-n</string><string>peon-chat</string>
     <string>python</string><string>-m</string><string>src</string>
   </array>
   <!-- EDIT: set WorkingDirectory to your local checkout path. -->

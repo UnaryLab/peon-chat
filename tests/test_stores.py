@@ -82,7 +82,7 @@ def test_overrides_path_from_env_redirects_store(monkeypatch, tmp_path):
 
 # ---------------------------------------------------------------------------
 # get_workdir: per-(agent, thread) directory under WORKDIR_BASE (env, default
-# ~/Projects/.peon-workdirs, absolute and OUTSIDE the repo). Namespaced by agent +
+# ~/Projects/.peon-chat-workdirs, absolute and OUTSIDE the repo). Namespaced by agent +
 # thread, created on demand, always ABSOLUTE.
 # ---------------------------------------------------------------------------
 
@@ -122,7 +122,7 @@ def test_get_workdir_returns_absolute_path(monkeypatch, tmp_path):
 
 
 def test_get_workdir_default_base_is_under_home_projects(monkeypatch, tmp_path):
-    # With WORKDIR_BASE unset the default base is ~/Projects/.peon-workdirs, an
+    # With WORKDIR_BASE unset the default base is ~/Projects/.peon-chat-workdirs, an
     # ABSOLUTE path OUTSIDE the project repo (so a run's default cwd is never the
     # framework source). No chdir needed since the default is absolute; create
     # defaults False so nothing is written regardless.
@@ -130,8 +130,8 @@ def test_get_workdir_default_base_is_under_home_projects(monkeypatch, tmp_path):
     path = claude_runner.get_workdir("aristotle", "T1")
     # (a) absolute.
     assert os.path.isabs(path)
-    # (b) under the expanded ~/Projects/.peon-workdirs base.
-    home_base = os.path.expanduser("~/Projects/.peon-workdirs")
+    # (b) under the expanded ~/Projects/.peon-chat-workdirs base.
+    home_base = os.path.expanduser("~/Projects/.peon-chat-workdirs")
     assert os.path.commonpath([path, home_base]) == home_base
     # (c) OUTSIDE the project repo root.
     assert os.path.commonpath([path, _PROJECT_ROOT]) != _PROJECT_ROOT

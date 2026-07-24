@@ -1,11 +1,11 @@
 """Per-thread workdir (shared by both backends + uploads).
 
 Each thread gets a dedicated directory under WORKDIR_BASE (env, default
-~/Projects/.peon-workdirs), namespaced by agent + thread_ts, used as the run's cwd
+~/Projects/.peon-chat-workdirs), namespaced by agent + thread_ts, used as the run's cwd
 and scanned for files to upload back. This is the single owner of that path
 scheme; app.py (for outbound file uploads) and both runners (cwd) reuse it. The
 base is read LIVE from os.environ so a SIGHUP .env reload takes effect. The
-default base is ABSOLUTE (~/Projects/.peon-workdirs, OUTSIDE this repo) so a run's
+default base is ABSOLUTE (~/Projects/.peon-chat-workdirs, OUTSIDE this repo) so a run's
 default cwd is never the framework source; get_workdir always returns an ABSOLUTE
 path (the subprocess cwd needs one). Set an explicit WORKDIR_BASE to override.
 """
@@ -15,13 +15,13 @@ from __future__ import annotations
 import os
 import re
 
-_DEFAULT_WORKDIR_BASE = "~/Projects/.peon-workdirs"
+_DEFAULT_WORKDIR_BASE = "~/Projects/.peon-chat-workdirs"
 
 
 def _workdir_base():
     """Resolve the workdir base dir, reading WORKDIR_BASE from os.environ LIVE.
 
-    Falls back to ~/Projects/.peon-workdirs (absolute, OUTSIDE the repo) when
+    Falls back to ~/Projects/.peon-chat-workdirs (absolute, OUTSIDE the repo) when
     unset/empty. Read lazily (per call), not an import-time constant, so a
     WORKDIR_BASE loaded from .env takes effect even though .env is loaded after
     this module is imported. expanduser is applied so the default ~ and an
@@ -43,7 +43,7 @@ def get_workdir(agent_name, thread_ts, create=False):
     relative WORKDIR_BASE override against the process cwd). An absolute path is
     required because the subprocess cwd cannot take a relative/ambiguous path. With
     the default base this resolves to
-    <home>/Projects/.peon-workdirs/<agent>/<thread>, i.e. OUTSIDE the repo.
+    <home>/Projects/.peon-chat-workdirs/<agent>/<thread>, i.e. OUTSIDE the repo.
 
     Shared helper: both runners use it (subprocess cwd) and app.py reuses it for
     the outbound file-upload scan.

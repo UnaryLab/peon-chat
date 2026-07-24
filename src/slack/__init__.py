@@ -1,4 +1,4 @@
-"""Slack-facing layer for peon.
+"""Slack-facing layer for peon-chat.
 
 The Bolt/Socket-Mode app build, the mention/message handlers, the per-thread
 control phrases, the in-process cron scheduler, the inbound/outbound file
