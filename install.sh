@@ -101,14 +101,18 @@ case "$(uname -s)" in
     REPO="$REPO" CONDA_BIN="$(conda info --base)/bin" DEST="$dest" \
       conda run -n peon-chat python - <<'PY'
 import os
+repo = os.environ["REPO"]
 text = open("deploy/com.unarylab.peon-chat.plist").read()
-text = text.replace("/Users/YOU/Projects/peon-chat", os.environ["REPO"])
+text = text.replace("/Users/YOU/Projects/peon-chat", repo)
 path = "%s:%s/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin" % (os.environ["CONDA_BIN"], os.environ["HOME"])
+# The log path is where `peon-chat logs` tails; both streams go to one file.
 text = text.replace(
     "  <key>RunAtLoad</key>",
     "  <key>EnvironmentVariables</key>\n"
     "  <dict><key>PATH</key><string>%s</string></dict>\n"
-    "  <key>RunAtLoad</key>" % path,
+    "  <key>StandardOutPath</key><string>%s/peon-chat.log</string>\n"
+    "  <key>StandardErrorPath</key><string>%s/peon-chat.log</string>\n"
+    "  <key>RunAtLoad</key>" % (path, repo, repo),
 )
 open(os.environ["DEST"], "w").write(text)
 PY

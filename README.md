@@ -55,10 +55,10 @@ invocations, context isolation, and the async model), see
 - The **`claude` CLI** (used by the claude-backed agents), installed,
   authenticated, and on `PATH`, with the `unarylab-research` plugin available
   (so `--agent unarylab-research:project_manager` resolves). Verified against
-  claude CLI 2.1.187.
+  claude CLI 2.1.219.
 - The **`codex` CLI** (only required if a Codex-backed agent like Dijkstra is
   configured), installed, authenticated, and on `PATH`. Verified against
-  codex-cli 0.141.0.
+  codex-cli 0.145.0.
 
 Both CLIs just need to be on `PATH`, so this works the same on Linux and
 macOS. (Runs are fully unsandboxed on both: codex `-s danger-full-access`,
@@ -103,8 +103,8 @@ claude `--permission-mode bypassPermissions`.)
    [Managing and uninstalling](#managing-and-uninstalling)). Drop
    `--service` to stop after the environment, and add `--force` to replace a
    unit file that is already installed. See
-   [Running always-on](#running-always-on) for managing the service, and to run
-   in the foreground instead:
+   [Running always-on](#running-always-on) for the unit details and hand-tuning,
+   and to run in the foreground instead:
    ```sh
    conda run -n peon-chat python -m src
    ```
@@ -172,7 +172,7 @@ Each agent is its own Slack bot that you address by name.
    thread on a DM message opens a separate conversation, exactly like a thread
    anywhere else. If Slack shows "Sending messages to this app has been turned
    off", the app's Messages Tab is disabled: update the app from a regenerated
-   manifest (which now enables it), or toggle it by hand under App Home > Show
+   manifest (which enables it), or toggle it by hand under App Home > Show
    Tabs > Messages Tab (check "Allow users to send ... messages").
 4. **Ask without typing a question.** If you @-mention an agent with no actual
    question, it replies asking what you would like to ask.
@@ -344,10 +344,11 @@ Four steps:
    enable Socket Mode, and install it.
 3. Set Euclid's two env vars: `SLACK_BOT_TOKEN_EUCLID` and `SLACK_APP_TOKEN_EUCLID`.
 4. **Apply the change.** Either **hot-reload** (no restart, recommended) by sending
-   `SIGHUP` to the running process: `kill -HUP <pid>` (or `systemctl --user reload
-   <name>`). The process re-reads `agents.json` + `.env` and brings up just Euclid's
-   connection; every already-running agent keeps its live connection untouched. Or
-   **restart the process** (`python -m src`, or `systemctl --user restart <name>`);
+   `SIGHUP` to the running process: `peon-chat reload` (or `kill -HUP <pid>`, or
+   `systemctl --user reload peon-chat`). The process re-reads `agents.json` + `.env`
+   and brings up just Euclid's connection; every already-running agent keeps its
+   live connection untouched. Or **restart the process** (`peon-chat restart`, or
+   `systemctl --user restart peon-chat`, or `python -m src` in the foreground);
    in-flight conversations resume from `sessions.json`, so no thread context is lost
    either way. See [Hot-reload (SIGHUP)](#hot-reload-sighup) below for the
    edit-both-files caveat.
@@ -363,6 +364,7 @@ You do **not** have to restart to pick up changes. Send the running process
 connections in place:
 
 ```sh
+peon-chat reload           # or, by hand:
 kill -HUP <pid>            # or, under systemd:
 systemctl --user reload peon-chat   # the unit maps reload -> SIGHUP
 ```
@@ -435,9 +437,8 @@ systemctl --user daemon-reload
 systemctl --user enable --now peon-chat
 ```
 
-Manage it with `systemctl --user status|reload|restart|stop peon-chat`
-(`reload` sends SIGHUP for a hot config reload, `restart` is for code changes)
-and follow logs with `journalctl --user -u peon-chat -f`.
+Manage it with the `peon-chat` command (see
+[Managing and uninstalling](#managing-and-uninstalling)).
 
 **macOS (`launchd`), reboot-persistent always-on:** copy the shipped LaunchAgent
 to `~/Library/LaunchAgents/com.unarylab.peon-chat.plist`, edit it for your machine,
@@ -466,16 +467,8 @@ Edit the plist for your machine:
   `peon-chat.log`). Runtime config belongs in `.env`, not the plist (see the
   template's comments).
 
-Manage it:
-
-- **Status:** `launchctl list | grep peon-chat` (a `Status` of `0` means healthy).
-- **Hot config reload (no restart):** after editing `agents.json`/`.env`, send the
-  running process `SIGHUP` with `kill -HUP <pid>` (the process logs its current HUP
-  PID on startup; see [Hot-reload (SIGHUP)](#hot-reload-sighup)).
-- **Full restart (for code changes):**
-  `launchctl kickstart -k gui/$(id -u)/com.unarylab.peon-chat`.
-- **Stop / disable:** `launchctl unload -w ~/Library/LaunchAgents/com.unarylab.peon-chat.plist`.
-- **Logs:** wherever you pointed `StandardOutPath` (e.g. `peon-chat.log`).
+Manage it with the `peon-chat` command (see
+[Managing and uninstalling](#managing-and-uninstalling)).
 
 This is the macOS equivalent of the `systemd` unit above; `deploy/peon-chat.service` is
 the Linux always-on option and `deploy/com.unarylab.peon-chat.plist` is the macOS one.
@@ -491,6 +484,16 @@ works the same on macOS (launchd) and Linux (`systemd --user`):
 - `peon-chat reload` - SIGHUP for a hot `agents.json`/`.env` reload
 - `peon-chat logs` - follow the service log
 - `peon-chat uninstall` - stop and remove the service, and remove the command
+
+Details behind those commands: `peon-chat reload` looks up the launchd job's pid
+and sends it `SIGHUP` (the process logs its own HUP pid on startup; see
+[Hot-reload (SIGHUP)](#hot-reload-sighup)), and on Linux it is
+`systemctl --user reload peon-chat`. Logs go to `peon-chat.log` in the repo on
+macOS (`install.sh --service` points the plist's `StandardOutPath` /
+`StandardErrorPath` there) and to `journalctl --user -u peon-chat` on Linux. To
+stop and disable the service without removing it, run
+`launchctl unload -w ~/Library/LaunchAgents/com.unarylab.peon-chat.plist` on
+macOS or `systemctl --user disable --now peon-chat` on Linux.
 
 `peon-chat uninstall` asks for confirmation first (pass `--yes` to skip the
 prompt). It keeps the repo checkout, `.env`, the `peon-chat` conda env, and the

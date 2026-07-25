@@ -13,6 +13,9 @@ See the [README](README.md) for installation and usage.
 peon-chat/                          project root
   agents.json                  the agent definitions (SINGLE SOURCE OF TRUTH)
   quotes.json                  optional placeholder quotes (missing/invalid = default "thinking..." text)
+  install.sh                   one-step installer (conda env, deps, the peon-chat command, .env, manifests; --service loads the unit)
+  bin/peon-chat                the service management command (status, restart, reload, logs, uninstall)
+  deploy/                      the always-on unit templates (launchd plist for macOS, systemd --user unit for Linux)
   src/                         the importable package (run as `python -m src`)
     __init__.py
     __main__.py                `python -m src` runs the app; `python -m src manifest <name>` prints a manifest
@@ -139,7 +142,7 @@ thread_ts)` for **every** backend, so contexts stay independent (see below).
 ## The verified claude invocation (per agent)
 
 `build_command` (the logic lives in `src/runners/claude.py`, re-exported by the
-`claude_runner` facade) produces exactly these argv lists (claude CLI 2.1.187,
+`claude_runner` facade) produces exactly these argv lists (claude CLI 2.1.219,
 all empirically verified to work):
 
 The model and effort come from each agent's `agents.json` entry. The shipped
@@ -194,7 +197,7 @@ spawn argv RESUMES AND FORKS it instead of starting fresh:
 claude -p --output-format json --resume <thread uuid> --fork-session [--agent <x>] --permission-mode bypassPermissions --model <m> [--effort <e>] "<task>"
 ```
 
-`--fork-session` is verified against claude CLI 2.1.201 (`claude --help`:
+`--fork-session` is verified against claude CLI 2.1.219 (`claude --help`:
 "When resuming, create a new session ID instead of reusing the original (use
 with --resume or --continue)"): the run inherits the session's full hidden
 conversation state but writes to a NEW session id the CLI mints, which peon-chat
@@ -213,7 +216,7 @@ never pass the flag, so the load-bearing default argv above is byte-identical.
 ## The verified codex invocation (Codex-backed agents, e.g. Dijkstra)
 
 `build_command` (the logic lives in `src/runners/codex.py`, re-exported by the
-`codex_runner` facade) produces exactly these argv lists (codex-cli 0.141.0, all
+`codex_runner` facade) produces exactly these argv lists (codex-cli 0.145.0, all
 empirically verified). Codex mints its own session id (a `thread_id`), so a fresh
 run captures it from stdout; a resume passes it back.
 The `--profile`, `-m`, and `-c model_reasoning_effort` flags are conditional on
@@ -262,7 +265,7 @@ Details:
   model_reasoning_effort`) override profile config, so `agents.json` stays
   authoritative for model/effort. The flag is applied on the **fresh** `codex exec`
   run only: `codex exec resume` does not accept `--profile` (verified against
-  codex-cli 0.142.0), and the resumed thread already carries the persona from turn
+  codex-cli 0.145.0), and the resumed thread already carries the persona from turn
   one. A missing profile makes codex itself error, surfaced by `run_codex`'s
   existing error handling. The native `.codex/agents` subagent-spawn path does NOT
   apply a persona under headless `codex exec` on this version, which is why the
