@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Manage the always-on peon-chat service: status, restart, reload, logs, uninstall.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# ponytail: two branches only, Darwin uses launchd and anything else uses systemd --user.
+OS="$(uname -s)"
+PLIST="$HOME/Library/LaunchAgents/com.unarylab.peon-chat.plist"
+UNIT="$HOME/.config/systemd/user/peon-chat.service"
+SHIM="$HOME/.local/bin/peon-chat"
+
+usage() {
+  cat <<'EOF'
+usage: peon-chat <command>
+
+  status     show whether the service is running
+  restart    restart the service (for code changes)
+  reload     send SIGHUP to re-read agents.json and .env
+  logs       follow the service log
+  uninstall  stop and remove the service and the peon-chat command
+             (--yes skips the confirmation prompt)
+EOF
+}
+
+case "${1:-}" in
+  ""|-h|--help) usage ;;
+
+  status)
+    if [ "$OS" = Darwin ]; then
+      launchctl list | grep peon-chat
+    else
+      systemctl --user status peon-chat
+    fi
+    ;;
+
+  restart)
+    if [ "$OS" = Darwin ]; then
+      launchctl kickstart -k "gui/$(id -u)/com.unarylab.peon-chat"
+    else
+      systemctl --user restart peon-chat
+    fi
+    ;;
+
+  reload)
+    if [ "$OS" = Darwin ]; then
+      pid="$(launchctl list com.unarylab.peon-chat | awk '/"PID"/ {print $3}' | tr -d ';')"
+      if [ -z "$pid" ]; then
+        echo "peon-chat: the service is not running, nothing to reload." >&2
+        exit 1
+      fi
+      kill -HUP "$pid"
+      echo "sent SIGHUP to pid $pid"
+    else
+      systemctl --user reload peon-chat
+    fi
+    ;;
+
+  logs)
+    if [ "$OS" = Darwin ]; then
+      if [ ! -f "$REPO/peon-chat.log" ]; then
+        echo "peon-chat: no log file at $REPO/peon-chat.log; add StandardOutPath to the plist." >&2
+        exit 1
+      fi
+      tail -f "$REPO/peon-chat.log"
+    else
+      journalctl --user -u peon-chat -f
+    fi
+    ;;
+
+  uninstall)
+    if [ "${2:-}" != --yes ] && [ "${2:-}" != -y ]; then
+      echo "This will stop and remove the peon-chat service and delete:"
+      if [ "$OS" = Darwin ]; then echo "  $PLIST"; else echo "  $UNIT"; fi
+      echo "  $SHIM"
+      printf 'Type yes to continue: '
+      read -r answer
+      [ "$answer" = yes ] || { echo "aborted, nothing changed."; exit 1; }
+    fi
+    if [ "$OS" = Darwin ]; then
+      launchctl unload -w "$PLIST" 2>/dev/null || true
+      rm -f "$PLIST"
+    else
+      systemctl --user disable --now peon-chat 2>/dev/null || true
+      rm -f "$UNIT"
+      systemctl --user daemon-reload
+    fi
+    rm -f "$SHIM"
+    echo "removed: the service unit and the peon-chat command."
+    echo "kept: the repo checkout, .env, the peon-chat conda env, and the JSON stores (sessions.json, overrides.json, crons.json, jobs.json)."
+    ;;
+
+  *)
+    echo "peon-chat: unknown command: $1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

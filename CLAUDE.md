@@ -17,6 +17,8 @@ See `README.md` for installation and Slack usage, and `ARCHITECTURE.md` for the 
 
 Everything runs in the `peon-chat` conda env (Python 3.12):
 
+- Install (env, deps, `.env`, manifests): `./install.sh`; add `--service` to also install and load the launchd/systemd unit (`--force` replaces an existing unit file)
+- Manage the service (installed by `install.sh` at `~/.local/bin/peon-chat`, wraps launchd/systemd): `peon-chat status|restart|reload|logs`; `peon-chat uninstall` stops and removes the service and the command (confirmation prompt, `--yes` skips it) while keeping the repo, `.env`, the conda env, and the JSON stores
 - Run all bots (always-on): `conda run -n peon-chat python -m src`
 - Full test suite: `conda run -n peon-chat python -m pytest tests/ -q` (mocked/offline, no live Slack or CLI calls)
 - Single test: `conda run -n peon-chat python -m pytest tests/test_build_command.py::<test_name> -q` (tests are split into themed `tests/test_*.py` files sharing `tests/helpers.py`)

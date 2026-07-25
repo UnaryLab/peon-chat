@@ -71,42 +71,52 @@ claude `--permission-mode bypassPermissions`.)
    git clone git@github.com:<your-org>/peon-chat.git
    cd peon-chat
    ```
-2. **Create and activate the env** (Python 3.12):
+2. **Write the Slack app manifests:**
    ```sh
-   conda create -n peon-chat python=3.12 -y
-   conda activate peon-chat
+   python3 -m src manifest --write
    ```
-3. **Install dependencies:**
-   ```sh
-   pip install -r requirements.txt
-   ```
-4. **Configure credentials:** copy the example env file and fill it in:
+   One `manifests/manifest-<name>.json` per agent in `agents.json`. This mode is
+   Slack-free and stdlib-only, so any Python 3 works here, with no environment
+   and no dependencies.
+3. **Create the Slack apps** from those manifests and collect each app's two
+   tokens: see [Create the Slack apps](#create-the-slack-apps) below.
+4. **Fill in the tokens:**
    ```sh
    cp .env.example .env
    ```
-   Fill in each app's Slack tokens (`SLACK_BOT_TOKEN_*` / `SLACK_APP_TOKEN_*`);
-   see [Create the Slack apps](#create-the-slack-apps) below for how to create
-   the Slack apps and obtain the bot (`xoxb-...`) and app-level (`xapp-...`)
-   tokens. The process loads `.env` automatically on startup (via
-   `python-dotenv`). An agent is started only if BOTH of its tokens are set;
-   agents with a missing token are skipped with a warning, so you can run with
+   Set `SLACK_BOT_TOKEN_*` / `SLACK_APP_TOKEN_*` to each app's bot (`xoxb-...`)
+   and app-level (`xapp-...`) token. The process loads `.env` on startup (via
+   `python-dotenv`). An agent starts only if BOTH of its tokens are set; an
+   agent with a missing token is skipped with a warning, so you can run with
    just one configured agent. Model and effort are NOT set here: each agent's
    `model`/`effort` live in `agents.json`.
-5. **Run it:**
+5. **Run the installer:**
+   ```sh
+   ./install.sh --service
+   ```
+   It checks the required programs, creates the `peon-chat` conda env
+   (Python 3.12) if it does not exist, installs `requirements.txt` into it,
+   reports any Slack token still unfilled, then installs and loads the launchd
+   (macOS) or `systemd --user` (Linux) unit and leaves the bots running. It also
+   puts a `peon-chat` command on your `PATH` at `~/.local/bin/peon-chat` for
+   managing the service (see
+   [Managing and uninstalling](#managing-and-uninstalling)). Drop
+   `--service` to stop after the environment, and add `--force` to replace a
+   unit file that is already installed. See
+   [Running always-on](#running-always-on) for managing the service, and to run
+   in the foreground instead:
    ```sh
    conda run -n peon-chat python -m src
    ```
-   For a real always-on deployment (systemd / launchd / nohup), see
-   [Running always-on](#running-always-on).
 
 ### Create the Slack apps
 
 **One Slack app per agent (with Socket Mode enabled).** For each of Aristotle,
-Brunel, Cicero, Dijkstra, create a separate app from its manifest, which you
-generate from `agents.json` with `python -m src manifest <name>` (Slack:
-*Create New App* -> *From a manifest*, pasting the printed JSON). Run
-`python -m src manifest` with no name to print every agent's manifest as a
-JSON array at once. For EACH app:
+Brunel, Cicero, Dijkstra, create a separate app from the matching
+`manifests/manifest-<name>.json` from step 2 (Slack: *Create New App* -> *From a
+manifest*, pasting that file's JSON). To regenerate one manifest, run
+`python3 -m src manifest <name>` (printed) or `python3 -m src manifest <name>
+--write` (saved). For EACH app:
 
 - **Bot scopes** (already in the manifest): `app_mentions:read`, `chat:write`,
   plus `channels:history`, `groups:history`, `im:history`, `mpim:history` so
@@ -386,6 +396,27 @@ One gotcha: service managers start with a stripped-down `PATH`, so make
 sure `conda` (or your Python) and the `claude`/`codex` CLIs are reachable from the
 unit.
 
+**Recommended (Linux or macOS):**
+
+```sh
+./install.sh --service
+```
+
+It fills the repo path into the shipped unit for your OS, and on macOS also
+injects an `EnvironmentVariables` > `PATH` covering your conda bin dir,
+`$HOME/.local/bin`, and the system dirs; on Linux it substitutes conda's
+absolute path into `ExecStart` and enables linger (`loginctl enable-linger`) so
+the service keeps running with no session open. It then loads the unit (launchd:
+`unload` + `load -w`; systemd: `daemon-reload`, `enable --now`, `restart`), so
+the service is running when it returns. If the unit file already exists, the command stops
+without changing anything unless you pass `--force` to replace it:
+
+```sh
+./install.sh --service --force
+```
+
+The rest of this section is for hand-tuning the unit yourself.
+
 **Quick / portable (Linux or macOS), no files:**
 
 ```sh
@@ -399,6 +430,7 @@ it:
 ```sh
 cp deploy/peon-chat.service ~/.config/systemd/user/
 # edit ~/.config/systemd/user/peon-chat.service: WorkingDirectory + ExecStart conda path
+loginctl enable-linger "$USER"   # keep it running with no session open
 systemctl --user daemon-reload
 systemctl --user enable --now peon-chat
 ```
@@ -447,6 +479,23 @@ Manage it:
 
 This is the macOS equivalent of the `systemd` unit above; `deploy/peon-chat.service` is
 the Linux always-on option and `deploy/com.unarylab.peon-chat.plist` is the macOS one.
+
+## Managing and uninstalling
+
+`./install.sh` installs a `peon-chat` command at `~/.local/bin/peon-chat`. It
+wraps the OS commands from [Running always-on](#running-always-on) above, so it
+works the same on macOS (launchd) and Linux (`systemd --user`):
+
+- `peon-chat status` - is the service running
+- `peon-chat restart` - full restart, for code changes
+- `peon-chat reload` - SIGHUP for a hot `agents.json`/`.env` reload
+- `peon-chat logs` - follow the service log
+- `peon-chat uninstall` - stop and remove the service, and remove the command
+
+`peon-chat uninstall` asks for confirmation first (pass `--yes` to skip the
+prompt). It keeps the repo checkout, `.env`, the `peon-chat` conda env, and the
+per-thread JSON stores (`sessions.json`, `overrides.json`, `crons.json`,
+`jobs.json`).
 
 ## Self-check
 
