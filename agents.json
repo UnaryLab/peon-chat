@@ -1,5 +1,5 @@
 [
-  {"name": "aristotle", "display_name": "Aristotle", "backend": "claude", "claude_agent": "unarylab-research:research_manager", "model": "claude-opus-5", "effort": "high"},
+  {"name": "aristotle", "display_name": "Aristotle", "backend": "claude", "claude_agent": "unarylab-research:research_manager", "model": "claude-fable-5", "effort": "high"},
   {"name": "brunel", "display_name": "Brunel", "backend": "claude", "claude_agent": "unarylab-research:project_manager", "model": "claude-opus-5", "effort": "high"},
   {"name": "cicero", "display_name": "Cicero", "backend": "claude", "claude_agent": null, "model": "claude-opus-5", "effort": "high"},
   {"name": "dijkstra", "display_name": "Dijkstra", "backend": "codex", "codex_profile": "project_manager", "model": "gpt-5.6-sol", "effort": "high"}
