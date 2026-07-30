@@ -8,6 +8,8 @@ OS="$(uname -s)"
 PLIST="$HOME/Library/LaunchAgents/com.unarylab.peon-chat.plist"
 LOGROTATE_PLIST="$HOME/Library/LaunchAgents/com.unarylab.peon-chat.logrotate.plist"
 UNIT="$HOME/.config/systemd/user/peon-chat.service"
+LOGROTATE_UNIT="$HOME/.config/systemd/user/peon-chat-logrotate.service"
+LOGROTATE_TIMER="$HOME/.config/systemd/user/peon-chat-logrotate.timer"
 SHIM="$HOME/.local/bin/peon-chat"
 
 usage() {
@@ -71,7 +73,14 @@ case "${1:-}" in
   uninstall)
     if [ "${2:-}" != --yes ] && [ "${2:-}" != -y ]; then
       echo "This will stop and remove the peon-chat service and delete:"
-      if [ "$OS" = Darwin ]; then echo "  $PLIST"; echo "  $LOGROTATE_PLIST"; else echo "  $UNIT"; fi
+      if [ "$OS" = Darwin ]; then
+        echo "  $PLIST"
+        echo "  $LOGROTATE_PLIST"
+      else
+        echo "  $UNIT"
+        echo "  $LOGROTATE_UNIT"
+        echo "  $LOGROTATE_TIMER"
+      fi
       echo "  $SHIM"
       printf 'Type yes to continue: '
       read -r answer
@@ -84,7 +93,8 @@ case "${1:-}" in
       rm -f "$LOGROTATE_PLIST"
     else
       systemctl --user disable --now peon-chat 2>/dev/null || true
-      rm -f "$UNIT"
+      systemctl --user disable --now peon-chat-logrotate.timer 2>/dev/null || true
+      rm -f "$UNIT" "$LOGROTATE_UNIT" "$LOGROTATE_TIMER"
       systemctl --user daemon-reload
     fi
     rm -f "$SHIM"

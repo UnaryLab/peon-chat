@@ -1,0 +1,7 @@
+[Unit]
+Description=peon-chat log rotation
+
+[Service]
+Type=oneshot
+# Adjust the repo path for your machine (install.sh fills it in).
+ExecStart=/bin/sh %h/Projects/peon-chat/deploy/rotate-log.sh

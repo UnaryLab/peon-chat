@@ -139,6 +139,17 @@ PY
     systemctl --user enable --now peon-chat
     systemctl --user restart peon-chat
     echo "systemd --user service enabled and restarted: peon-chat"
+    # Log rotation for a plain peon-chat.log in the repo; the script no-ops when
+    # the file is absent (the service itself logs to journald, which rotates itself).
+    rotate_dest="$HOME/.config/systemd/user/peon-chat-logrotate.service"
+    timer_dest="$HOME/.config/systemd/user/peon-chat-logrotate.timer"
+    guard_dest "$rotate_dest"
+    guard_dest "$timer_dest"
+    sed "s|%h/Projects/peon-chat|$REPO|" deploy/peon-chat-logrotate.service > "$rotate_dest"
+    cp deploy/peon-chat-logrotate.timer "$timer_dest"
+    systemctl --user daemon-reload
+    systemctl --user enable --now peon-chat-logrotate.timer
+    echo "systemd log rotation timer enabled: peon-chat-logrotate.timer (daily, rotates peon-chat.log past 10 MB)"
     ;;
   *)
     echo "install.sh: no service template for $(uname -s); run 'conda run -n peon-chat python -m src' yourself." >&2
