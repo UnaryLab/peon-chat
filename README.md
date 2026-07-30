@@ -97,7 +97,8 @@ claude `--permission-mode bypassPermissions`.)
    It checks the required programs, creates the `peon-chat` conda env
    (Python 3.12) if it does not exist, installs `requirements.txt` into it,
    reports any Slack token still unfilled, then installs and loads the launchd
-   (macOS) or `systemd --user` (Linux) unit and leaves the bots running. It also
+   (macOS) or `systemd --user` (Linux) unit and leaves the bots running (on
+   macOS it also loads a daily log-rotation agent for `peon-chat.log`). It also
    puts a `peon-chat` command on your `PATH` at `~/.local/bin/peon-chat` for
    managing the service (see
    [Managing and uninstalling](#managing-and-uninstalling)). Drop
@@ -410,8 +411,13 @@ injects an `EnvironmentVariables` > `PATH` covering your conda bin dir,
 absolute path into `ExecStart` and enables linger (`loginctl enable-linger`) so
 the service keeps running with no session open. It then loads the unit (launchd:
 `unload` + `load -w`; systemd: `daemon-reload`, `enable --now`, `restart`), so
-the service is running when it returns. If the unit file already exists, the command stops
-without changing anything unless you pass `--force` to replace it:
+the service is running when it returns. On macOS it also installs and loads a
+second LaunchAgent, `com.unarylab.peon-chat.logrotate`, which runs
+`deploy/rotate-log.sh` daily at 03:17: when `peon-chat.log` is past 10 MB it
+gzips a copy next to it and truncates the log in place, keeping the 5 newest
+archives (truncate-in-place because launchd holds the log file open; Linux
+logs go to journald, which rotates itself). If a unit file already exists, the
+command stops without changing anything unless you pass `--force` to replace it:
 
 ```sh
 ./install.sh --service --force
@@ -483,7 +489,7 @@ works the same on macOS (launchd) and Linux (`systemd --user`):
 - `peon-chat restart` - full restart, for code changes
 - `peon-chat reload` - SIGHUP for a hot `agents.json`/`.env` reload
 - `peon-chat logs` - follow the service log
-- `peon-chat uninstall` - stop and remove the service, and remove the command
+- `peon-chat uninstall` - stop and remove the service (on macOS also the log-rotation agent), and remove the command
 
 Details behind those commands: `peon-chat reload` looks up the launchd job's pid
 and sends it `SIGHUP` (the process logs its own HUP pid on startup; see

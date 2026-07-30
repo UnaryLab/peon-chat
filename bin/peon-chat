@@ -6,6 +6,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # ponytail: two branches only, Darwin uses launchd and anything else uses systemd --user.
 OS="$(uname -s)"
 PLIST="$HOME/Library/LaunchAgents/com.unarylab.peon-chat.plist"
+LOGROTATE_PLIST="$HOME/Library/LaunchAgents/com.unarylab.peon-chat.logrotate.plist"
 UNIT="$HOME/.config/systemd/user/peon-chat.service"
 SHIM="$HOME/.local/bin/peon-chat"
 
@@ -70,7 +71,7 @@ case "${1:-}" in
   uninstall)
     if [ "${2:-}" != --yes ] && [ "${2:-}" != -y ]; then
       echo "This will stop and remove the peon-chat service and delete:"
-      if [ "$OS" = Darwin ]; then echo "  $PLIST"; else echo "  $UNIT"; fi
+      if [ "$OS" = Darwin ]; then echo "  $PLIST"; echo "  $LOGROTATE_PLIST"; else echo "  $UNIT"; fi
       echo "  $SHIM"
       printf 'Type yes to continue: '
       read -r answer
@@ -79,6 +80,8 @@ case "${1:-}" in
     if [ "$OS" = Darwin ]; then
       launchctl unload -w "$PLIST" 2>/dev/null || true
       rm -f "$PLIST"
+      launchctl unload -w "$LOGROTATE_PLIST" 2>/dev/null || true
+      rm -f "$LOGROTATE_PLIST"
     else
       systemctl --user disable --now peon-chat 2>/dev/null || true
       rm -f "$UNIT"

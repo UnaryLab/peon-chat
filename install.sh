@@ -119,6 +119,13 @@ PY
     launchctl unload "$dest" 2>/dev/null || true
     launchctl load -w "$dest"
     echo "launchd service loaded: com.unarylab.peon-chat"
+    # Log rotation (macOS only; Linux logs go to journald, which rotates itself).
+    rotate_dest="$HOME/Library/LaunchAgents/com.unarylab.peon-chat.logrotate.plist"
+    guard_dest "$rotate_dest"
+    sed "s|/Users/YOU/Projects/peon-chat|$REPO|" deploy/com.unarylab.peon-chat.logrotate.plist > "$rotate_dest"
+    launchctl unload "$rotate_dest" 2>/dev/null || true
+    launchctl load -w "$rotate_dest"
+    echo "launchd log rotation loaded: com.unarylab.peon-chat.logrotate (daily, rotates peon-chat.log past 10 MB)"
     ;;
   Linux)
     dest="$HOME/.config/systemd/user/peon-chat.service"
