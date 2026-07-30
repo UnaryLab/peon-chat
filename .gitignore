@@ -4,6 +4,7 @@ overrides.json
 crons.json
 jobs.json
 peon-chat.log
+peon-chat.log.*.gz
 __pycache__/
 *.pyc
 .pytest_cache/
