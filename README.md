@@ -68,7 +68,7 @@ claude `--permission-mode bypassPermissions`.)
 
 1. **Clone the private repo** (private access via SSH key or PAT is required):
    ```sh
-   git clone git@github.com:<your-org>/peon-chat.git
+   git clone git@github.com:UnaryLab/peon-chat.git
    cd peon-chat
    ```
 2. **Write the Slack app manifests:**
