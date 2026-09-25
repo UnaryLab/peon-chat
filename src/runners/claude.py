@@ -441,7 +441,17 @@ def _run_claude_streaming(agent, argv, timeout, overrides, on_update, cancel=Non
         if cancel is not None and cancel.requested:
             return _settle_cancel()
         stderr = read_stderr()
-        err = ClaudeRunError(format_process_failure("claude", proc.returncode, stderr))
+        detail = ""
+        if result_payload is not None:
+            detail = str(
+                result_payload.get("result")
+                or result_payload.get("error")
+                or result_payload.get("subtype")
+                or ""
+            )
+        err = ClaudeRunError(
+            format_process_failure("claude", proc.returncode, stderr, stdout=detail)
+        )
         # Carry the FULL stderr for marker checks (e.g. the dead-session heal in
         # answer()), which must not be defeated by the message's 1000-char cut.
         err.stderr = stderr

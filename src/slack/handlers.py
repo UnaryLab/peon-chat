@@ -48,14 +48,18 @@ def _reply_thread_ts(conv_key):
 # !stop. One constant so the worker's two emit sites never drift.
 _INTERRUPTED_NOTICE = "_(interrupted)_"
 
-# Appended to the partial streamed reply when a run ERRORS (or is interrupted) after
-# producing some text: keep what was streamed instead of freezing a mid-sentence
-# fragment or replacing it with a bare error, and tell the user the thread is still
-# resumable (the session id was persisted at run start, so the next message
-# continues). Distinct from the clean !stop _INTERRUPTED_NOTICE above.
-_INTERRUPTED_RESUME_NOTICE = (
-    "\n\n_(interrupted - the reply was cut off; send any message to continue)_"
+# Appended to the partial streamed reply when a run ERRORS after producing some
+# text: keep what was streamed instead of freezing a mid-sentence fragment or
+# replacing it with a bare error, name the error, and tell the user the thread
+# is still resumable (the session id was persisted at run start, so the next
+# message continues). Distinct from the clean !stop _INTERRUPTED_NOTICE above.
+_ERRORED_PARTIAL_NOTICE = (
+    "\n\n_(error: {error} - the reply was cut off; send any message to continue)_"
 )
+
+# Head-truncate the embedded exception text so a long exception message can
+# never itself push the errored-partial chat_update over Slack's limit.
+_ERRORED_PARTIAL_ERROR_MAX = 500
 
 
 def _event_id(event):
@@ -121,17 +125,19 @@ def _restore_terminal_postamble(text, postamble):
     return text.rstrip() + "\n\n" + postamble
 
 
-def _truncate_for_slack(text):
+def _truncate_for_slack(text, limit=_SLACK_MAX_TEXT_LEN):
     """Cap run-output text so a chat_update never trips Slack's msg_too_long.
 
     Keeps the HEAD of the text and appends a short truncation note. Callers
     apply it AFTER the <<files:>> marker is parsed/stripped (so file delivery
     still works) and BEFORE the interrupted label / usage footer are appended
-    (so those always survive).
+    (so those always survive). `limit` narrows the cap below the default
+    when the caller still has to fit other text (e.g. an error notice)
+    alongside this text within `_SLACK_MAX_TEXT_LEN`.
     """
-    if not text or len(text) <= _SLACK_MAX_TEXT_LEN:
+    if not text or len(text) <= limit:
         return text
-    return text[:_SLACK_MAX_TEXT_LEN] + _TRUNCATION_NOTICE
+    return text[:limit] + _TRUNCATION_NOTICE
 
 
 def _ts_before(left, right):
@@ -534,17 +540,21 @@ def _run_and_update(
             # strip after a mid-text marker mention would permanently eat the
             # prose tail. Only a complete trailing marker is removed; a
             # genuinely incomplete trailing marker may stay visible (error path).
+            error_text = str(exc)[:_ERRORED_PARTIAL_ERROR_MAX]
+            notice = _ERRORED_PARTIAL_NOTICE.format(error=error_text)
             partial, postamble = _split_terminal_postamble(streamed["text"])
             partial, _ = jobs._parse_spawn_marker(partial)
             partial, _ = jobs._parse_job_marker(partial)
             partial, _ = files._parse_file_marker(partial)
-            partial = _truncate_for_slack(partial.strip())
+            partial = _truncate_for_slack(
+                partial.strip(), limit=_SLACK_MAX_TEXT_LEN - len(notice)
+            )
             partial = _restore_terminal_postamble(partial, postamble)
             if partial:
                 client.chat_update(
                     channel=channel,
                     ts=placeholder_ts,
-                    text=_format_final_response(partial + _INTERRUPTED_RESUME_NOTICE),
+                    text=_format_final_response(partial + notice),
                 )
             else:
                 client.chat_update(

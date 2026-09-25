@@ -216,6 +216,39 @@ def _thread_id_from_stdout(stdout):
     return None
 
 
+def _error_detail_from_stdout(stdout):
+    """Return the last error detail seen in codex's JSONL stdout, or "".
+
+    Scans every line, tolerating stray non-JSON lines like _thread_id_from_stdout.
+    Covers two shapes: an event carrying an "error" field (a dict with a
+    "message", or any other value taken as-is), and an event whose "type"
+    contains "error" carrying a top-level "message". Returns the LAST one seen,
+    since a later error event overrides an earlier one for the same run.
+    """
+    detail = ""
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        error = event.get("error")
+        if error is not None:
+            detail = (
+                str(error.get("message", "")) if isinstance(error, dict) else str(error)
+            )
+            continue
+        if "error" in str(event.get("type") or "").lower():
+            message = event.get("message")
+            if message:
+                detail = str(message)
+    return detail or ""
+
+
 def _usage_dict_from_event(event):
     """Return the usage/token sub-dict carried by a codex JSONL event, or None.
 
@@ -432,7 +465,8 @@ def run_codex(
                         "codex",
                         proc.returncode,
                         stderr=stderr,
-                        stdout=getattr(proc, "stdout", ""),
+                        stdout=_error_detail_from_stdout(proc.stdout)
+                        or getattr(proc, "stdout", ""),
                     )
                 )
             stdout = proc.stdout
@@ -548,7 +582,12 @@ def _run_codex_streaming(argv, timeout, on_update, cwd=None, cancel=None):
         if cancel is not None and cancel.requested:
             return "".join(lines)
         raise CodexRunError(
-            format_process_failure("codex", proc.returncode, read_stderr())
+            format_process_failure(
+                "codex",
+                proc.returncode,
+                read_stderr(),
+                stdout=_error_detail_from_stdout("".join(lines)),
+            )
         )
 
     return "".join(lines)

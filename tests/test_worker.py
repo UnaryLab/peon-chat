@@ -217,10 +217,10 @@ def test_run_and_update_errored_partial_keeps_streamed_text(monkeypatch, tmp_pat
 
     _appmod._run_and_update(client, "C1", "TS1", _FILE_AGENT, "survey X", "T_err")
 
-    # The streamed partial is kept and a resume note appended; no bare error text.
+    # The streamed partial is kept, and a resume note naming the error is appended.
     assert "first half of the surv" in posted["text"]
     assert "send any message to continue" in posted["text"]
-    assert "hit an error" not in posted["text"]
+    assert "boom" in posted["text"]
 
 
 def test_run_and_update_errored_partial_keeps_prose_after_midtext_mention(
@@ -270,6 +270,60 @@ def test_run_and_update_errored_partial_keeps_prose_after_midtext_mention(
 
     # The prose tail after the mid-text mention is preserved verbatim.
     assert "Now the summary: all good." in posted["text"]
+    assert "send any message to continue" in posted["text"]
+
+
+def test_run_and_update_errored_partial_long_partial_and_error_stays_under_limit(
+    monkeypatch, tmp_path
+):
+    # A partial LONGER than the cap plus a long (~1,100-char) exception message
+    # must still post under Slack's 4,000-char chat_update limit, keeping both
+    # the error head and the resume note.
+    if not _HAVE_APP:
+        return
+    assert _appmod is not None
+    sessions = str(tmp_path / "sessions.json")
+    overrides = str(tmp_path / "overrides.json")
+    monkeypatch.setattr(claude_runner, "_sessions_path", lambda: sessions)
+    monkeypatch.setattr(claude_runner, "_overrides_path", lambda: overrides)
+    monkeypatch.setenv("WORKDIR_BASE", str(tmp_path / "wd"))
+
+    posted = {}
+    long_partial = "Here is a very long streamed reply. " * 200  # >> 3,800 chars
+    long_error = "boom: " + ("x" * 1100)
+
+    class _Runner:
+        @staticmethod
+        def answer(
+            agent,
+            prompt,
+            prior,
+            overrides=None,
+            on_update=None,
+            cancel=None,
+            on_session=None,
+        ):
+            on_update(long_partial)
+            raise claude_runner.ClaudeRunError(
+                f"claude exited with code 1: {long_error}"
+            )
+
+    class _Client:
+        def chat_update(self, channel=None, ts=None, text=None):
+            posted["text"] = text
+            return {"ok": True}
+
+        def files_upload_v2(self, **kwargs):
+            return {"ok": True}
+
+    monkeypatch.setattr(_appmod.runners, "get_runner", lambda backend: _Runner)
+
+    _appmod._run_and_update(
+        _Client(), "C1", "TS1", _FILE_AGENT, "survey X", "T_err_long"
+    )
+
+    assert len(posted["text"]) < 4000
+    assert "boom: xxx" in posted["text"]
     assert "send any message to continue" in posted["text"]
 
 
