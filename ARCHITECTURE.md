@@ -754,7 +754,9 @@ default instead of killing the process at import, see `_int_env`; on the
 streaming path this bounds the post-stream
 `proc.wait`, not the whole read), then `chat_update`s the placeholder with the
 result. A finished reply longer than Slack's 4,000-char `chat_update` limit is
-capped by `_truncate_for_slack` (the first 3,800 chars are kept and a
+capped by `_truncate_for_slack` (which first converts common Markdown
+(headings, **bold**, ~~strike~~, [text](url)) to Slack mrkdwn,
+leaving code fences and inline code untouched; then the first 3,800 chars are kept and a
 truncation note appended); the `<<files:>>` marker is parsed BEFORE the cap (so
 file delivery survives) and the interrupted label / usage footer are appended
 AFTER it (so they survive too). One run per (agent, thread) at a time: `_handle` claims the thread's

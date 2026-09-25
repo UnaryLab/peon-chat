@@ -125,8 +125,57 @@ def _restore_terminal_postamble(text, postamble):
     return text.rstrip() + "\n\n" + postamble
 
 
+# Code blocks (an unclosed ``` runs to the end, so a half-streamed block stays
+# code) and inline code spans: left untouched by the mrkdwn conversion.
+_CODE_RE = re.compile(r"(```[\s\S]*?(?:```|\Z)|`[^`\n]+`)")
+# A "#" line is a heading only at the start of the text or after a blank line.
+# No nested quantifiers (linear time); trailing blanks and a closing "#" run are
+# stripped in _md_heading.
+_MD_HEADING_RE = re.compile(r"(\A|\r?\n[ \t]*\r?\n)[ \t]*#{1,6}[ \t]+([^\r\n]*)")
+# Bodies cannot cross a "**"/"~~"/"[" or a newline, so each scan stops at the
+# next opener and the conversion runs in linear time. A link stays as raw
+# markdown when its text contains "<" or ">" or its URL contains "<", ">", "|",
+# "(", ")", "[", "]" or whitespace.
+_MD_BOLD_RE = re.compile(r"(?<!\w)\*\*(?=\S)((?:[^*\n]|\*(?!\*))+?)(?<=\S)\*\*(?!\w)")
+_MD_STRIKE_RE = re.compile(r"~~(?=\S)((?:[^~\n]|~(?!~))+?)(?<=\S)~~")
+_MD_LINK_RE = re.compile(r"\[([^\[\]\n<>]+)\]\((https?://[^()\s<>|\[\]]+)\)")
+
+
+def _md_heading(m):
+    """Render one heading match as *text*, dropping a closing "#" run only when
+    a space or tab precedes it (CommonMark)."""
+    body = m.group(2).rstrip(" \t")
+    head = body.rstrip("#")
+    if head != body and head[-1:] in (" ", "\t"):
+        body = head.rstrip(" \t")
+    if not body:
+        return m.group(0)
+    return m.group(1) + "*" + body.replace("**", "") + "*"
+
+
+def _md_to_mrkdwn(text):
+    """Convert the common standard-Markdown forms models emit to Slack mrkdwn.
+
+    Slack's `text` field renders mrkdwn, where bold is *x*, so a model's **x**
+    shows literal asterisks. Converts headings, **bold**, ~~strike~~,
+    and [text](url) links; code blocks and inline code are left as-is.
+    """
+    if not text:
+        return text
+    parts = _CODE_RE.split(text)
+    for i in range(0, len(parts), 2):  # even indices are outside code
+        part = parts[i]
+        part = _MD_HEADING_RE.sub(_md_heading, part)
+        part = _MD_BOLD_RE.sub(r"*\1*", part)
+        part = _MD_STRIKE_RE.sub(r"~\1~", part)
+        part = _MD_LINK_RE.sub(r"<\2|\1>", part)
+        parts[i] = part
+    return "".join(parts)
+
+
 def _truncate_for_slack(text, limit=_SLACK_MAX_TEXT_LEN):
-    """Cap run-output text so a chat_update never trips Slack's msg_too_long.
+    """Convert run-output text to Slack mrkdwn and cap it so a chat_update never
+    trips Slack's msg_too_long.
 
     Keeps the HEAD of the text and appends a short truncation note. Callers
     apply it AFTER the <<files:>> marker is parsed/stripped (so file delivery
@@ -135,9 +184,15 @@ def _truncate_for_slack(text, limit=_SLACK_MAX_TEXT_LEN):
     when the caller still has to fit other text (e.g. an error notice)
     alongside this text within `_SLACK_MAX_TEXT_LEN`.
     """
+    text = _md_to_mrkdwn(text)
     if not text or len(text) <= limit:
         return text
-    return text[:limit] + _TRUNCATION_NOTICE
+    head = text[:limit]
+    # Drop a <url|text> or <@id> token the cut left unclosed.
+    dangling = re.search(r"<[^<>\s|]+(\|[^<>\n]*)?\Z", head)
+    if dangling:
+        head = head[: dangling.start()]
+    return head + _TRUNCATION_NOTICE
 
 
 def _ts_before(left, right):
