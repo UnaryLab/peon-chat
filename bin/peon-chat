@@ -19,7 +19,7 @@ usage: peon-chat <command>
   status     show whether the service is running
   restart    restart the service (for code changes)
   reload     send SIGHUP to re-read agents.json and .env
-  logs       follow the service log
+  logs [-f]  show the last 200 log lines (-f follows)
   uninstall  stop and remove the service and the peon-chat command
              (--yes skips the confirmation prompt)
 EOF
@@ -59,14 +59,14 @@ case "${1:-}" in
     ;;
 
   logs)
-    if [ "$OS" = Darwin ]; then
-      if [ ! -f "$REPO/peon-chat.log" ]; then
-        echo "peon-chat: no log file at $REPO/peon-chat.log; add StandardOutPath to the plist." >&2
-        exit 1
-      fi
-      tail -f "$REPO/peon-chat.log"
+    if [ ! -f "$REPO/peon-chat.log" ]; then
+      echo "peon-chat: the service has not written a log yet ($REPO/peon-chat.log)." >&2
+      exit 1
+    fi
+    if [ "${2:-}" = -f ]; then
+      tail -n 200 -f "$REPO/peon-chat.log"
     else
-      journalctl --user -u peon-chat -f
+      tail -n 200 "$REPO/peon-chat.log"
     fi
     ;;
 

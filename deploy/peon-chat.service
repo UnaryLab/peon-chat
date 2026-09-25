@@ -3,7 +3,7 @@ Description=peon-chat multi-agent Slack bots
 After=network-online.target
 
 [Service]
-# Adjust WorkingDirectory and the conda path in ExecStart for your machine.
+# Adjust WorkingDirectory, the conda path in ExecStart, and the log path in StandardOutput for your machine.
 WorkingDirectory=%h/Projects/peon-chat
 # Runtime config (OBSIDIAN_VAULT_PATH, secrets, timeouts, toggles) lives in
 # .env at WorkingDirectory; peon-chat loads it first and the CLI subprocess inherits
@@ -11,9 +11,11 @@ WorkingDirectory=%h/Projects/peon-chat
 # Linux laptop variant: uncomment this ExecStart to block system sleep and
 # lid-close suspend while peon-chat is running long surveys. `systemd-inhibit` is
 # Linux-only; macOS uses deploy/com.unarylab.peon-chat.plist with caffeinate.
-# ExecStart=/usr/bin/systemd-inhibit --what=sleep:handle-lid-switch --why="peon-chat long-running surveys" --mode=block /usr/bin/env conda run -n peon-chat python -m src
+# ExecStart=/usr/bin/systemd-inhibit --what=sleep:handle-lid-switch --why="peon-chat long-running surveys" --mode=block /usr/bin/env conda run --no-capture-output -n peon-chat python -m src
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/usr/bin/env conda run -n peon-chat python -m src
+ExecStart=/usr/bin/env conda run --no-capture-output -n peon-chat python -m src
+StandardOutput=append:%h/Projects/peon-chat/peon-chat.log
+StandardError=inherit
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 # Wait 30s between relaunches so a crash into a still-broken network does not

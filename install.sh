@@ -105,21 +105,18 @@ repo = os.environ["REPO"]
 text = open("deploy/com.unarylab.peon-chat.plist").read()
 text = text.replace("/Users/YOU/Projects/peon-chat", repo)
 path = "%s:%s/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin" % (os.environ["CONDA_BIN"], os.environ["HOME"])
-# The log path is where `peon-chat logs` tails; both streams go to one file.
 text = text.replace(
     "  <key>RunAtLoad</key>",
     "  <key>EnvironmentVariables</key>\n"
     "  <dict><key>PATH</key><string>%s</string></dict>\n"
-    "  <key>StandardOutPath</key><string>%s/peon-chat.log</string>\n"
-    "  <key>StandardErrorPath</key><string>%s/peon-chat.log</string>\n"
-    "  <key>RunAtLoad</key>" % (path, repo, repo),
+    "  <key>RunAtLoad</key>" % path,
 )
 open(os.environ["DEST"], "w").write(text)
 PY
     launchctl unload "$dest" 2>/dev/null || true
     launchctl load -w "$dest"
     echo "launchd service loaded: com.unarylab.peon-chat"
-    # Log rotation (macOS only; Linux logs go to journald, which rotates itself).
+    # Daily rotation of peon-chat.log in the repo.
     rotate_dest="$HOME/Library/LaunchAgents/com.unarylab.peon-chat.logrotate.plist"
     guard_dest "$rotate_dest"
     sed "s|/Users/YOU/Projects/peon-chat|$REPO|" deploy/com.unarylab.peon-chat.logrotate.plist > "$rotate_dest"
@@ -139,8 +136,7 @@ PY
     systemctl --user enable --now peon-chat
     systemctl --user restart peon-chat
     echo "systemd --user service enabled and restarted: peon-chat"
-    # Log rotation for a plain peon-chat.log in the repo; the script no-ops when
-    # the file is absent (the service itself logs to journald, which rotates itself).
+    # Daily rotation of peon-chat.log in the repo.
     rotate_dest="$HOME/.config/systemd/user/peon-chat-logrotate.service"
     timer_dest="$HOME/.config/systemd/user/peon-chat-logrotate.timer"
     guard_dest "$rotate_dest"

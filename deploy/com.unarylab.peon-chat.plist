@@ -10,15 +10,17 @@
   <array>
     <string>/usr/bin/caffeinate</string><string>-i</string><string>--</string>
     <string>/usr/bin/env</string>
-    <string>conda</string><string>run</string><string>-n</string><string>peon-chat</string>
+    <string>conda</string><string>run</string><string>--no-capture-output</string><string>-n</string><string>peon-chat</string>
     <string>python</string><string>-m</string><string>src</string>
   </array>
-  <!-- EDIT: set WorkingDirectory to your local checkout path. -->
+  <!-- EDIT: set WorkingDirectory, StandardOutPath, and StandardErrorPath to your local checkout path. -->
   <key>WorkingDirectory</key><string>/Users/YOU/Projects/peon-chat</string>
   <!-- Runtime config (OBSIDIAN_VAULT_PATH, secrets, timeouts, toggles) lives in
        .env at WorkingDirectory; peon-chat loads it first and the CLI subprocess
        inherits it. Set a var here only if it must exist before .env is read
        (e.g. PATH so launchd can find `claude`/`codex` in ~/.local/bin). -->
+  <key>StandardOutPath</key><string>/Users/YOU/Projects/peon-chat/peon-chat.log</string>
+  <key>StandardErrorPath</key><string>/Users/YOU/Projects/peon-chat/peon-chat.log</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <!-- Wait 30s between relaunches so a crash into a still-broken network does not

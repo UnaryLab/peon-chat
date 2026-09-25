@@ -416,10 +416,8 @@ unit (macOS: a second LaunchAgent, `com.unarylab.peon-chat.logrotate`; Linux: a
 `peon-chat-logrotate.timer` + `.service` pair) that runs `deploy/rotate-log.sh`
 at 03:17: when `peon-chat.log` is past 10 MB it gzips a copy next to it and
 truncates the log in place, keeping the 5 newest archives (truncate-in-place
-because the service manager holds the log file open). On Linux the service
-itself logs to journald, which rotates on its own, so the rotation unit only
-matters for a `peon-chat.log` written some other way (e.g. the `nohup` option
-below) and no-ops when the file is absent. If a unit file already exists, the
+because the service manager holds the log file open), and no-ops when the
+file is absent. If a unit file already exists, the
 command stops without changing anything unless you pass `--force` to replace it:
 
 ```sh
@@ -431,16 +429,16 @@ The rest of this section is for hand-tuning the unit yourself.
 **Quick / portable (Linux or macOS), no files:**
 
 ```sh
-nohup conda run -n peon-chat python -m src > peon-chat.log 2>&1 &
+nohup conda run --no-capture-output -n peon-chat python -m src > peon-chat.log 2>&1 &
 ```
 
-**Linux (`systemd --user`):** copy the shipped unit into place, edit the two
-marked paths (`WorkingDirectory` and the conda path in `ExecStart`), then enable
-it:
+**Linux (`systemd --user`):** copy the shipped unit into place, edit the three
+marked paths (`WorkingDirectory`, the conda path in `ExecStart`, and the log path
+in `StandardOutput`), then enable it:
 
 ```sh
 cp deploy/peon-chat.service ~/.config/systemd/user/
-# edit ~/.config/systemd/user/peon-chat.service: WorkingDirectory + ExecStart conda path
+# edit ~/.config/systemd/user/peon-chat.service: WorkingDirectory + ExecStart conda path + StandardOutput log path
 loginctl enable-linger "$USER"   # keep it running with no session open
 systemctl --user daemon-reload
 systemctl --user enable --now peon-chat
@@ -472,8 +470,8 @@ Edit the plist for your machine:
   `KeepAlive` are `true` (start at login/boot, auto-restart on crash, which is
   what makes it survive reboots), and `ThrottleInterval` is 30s (no relaunch
   hot-loop after a crash).
-- To log to a file, add `StandardOutPath` / `StandardErrorPath` keys (e.g.
-  `peon-chat.log`). Runtime config belongs in `.env`, not the plist (see the
+- Set the `StandardOutPath` / `StandardErrorPath` paths to your repo's
+  `peon-chat.log`. Runtime config belongs in `.env`, not the plist (see the
   template's comments).
 
 Manage it with the `peon-chat` command (see
@@ -491,15 +489,16 @@ works the same on macOS (launchd) and Linux (`systemd --user`):
 - `peon-chat status` - is the service running
 - `peon-chat restart` - full restart, for code changes
 - `peon-chat reload` - SIGHUP for a hot `agents.json`/`.env` reload
-- `peon-chat logs` - follow the service log
+- `peon-chat logs` - print the last 200 log lines (`peon-chat logs -f` follows)
 - `peon-chat uninstall` - stop and remove the service and the log-rotation unit, and remove the command
 
 Details behind those commands: `peon-chat reload` looks up the launchd job's pid
 and sends it `SIGHUP` (the process logs its own HUP pid on startup; see
 [Hot-reload (SIGHUP)](#hot-reload-sighup)), and on Linux it is
-`systemctl --user reload peon-chat`. Logs go to `peon-chat.log` in the repo on
-macOS (`install.sh --service` points the plist's `StandardOutPath` /
-`StandardErrorPath` there) and to `journalctl --user -u peon-chat` on Linux. To
+`systemctl --user reload peon-chat`. On both OSes the service appends stdout and
+stderr to `peon-chat.log` in the repo (the plist's `StandardOutPath` /
+`StandardErrorPath`, the unit's `StandardOutput=append:`), and `conda run
+--no-capture-output` passes output through while the service runs. To
 stop and disable the service without removing it, run
 `launchctl unload -w ~/Library/LaunchAgents/com.unarylab.peon-chat.plist` on
 macOS or `systemctl --user disable --now peon-chat` on Linux.
