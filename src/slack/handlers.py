@@ -153,16 +153,46 @@ def _md_heading(m):
     return m.group(1) + "*" + body.replace("**", "") + "*"
 
 
+# A pipe table: a header row, a separator row of dashes/colons, then body rows,
+# every row starting with "|" (leading whitespace allowed).
+_MD_TABLE_RE = re.compile(
+    r"(?:^|(?<=\n))[ \t]*\|[^\n]*\n[ \t]*\|[ \t:|-]*-[ \t:|-]*(?:\n[ \t]*\|[^\n]*)*"
+)
+
+
+def _md_table(m):
+    """Render a pipe table as a column-aligned code block: Slack mrkdwn has no
+    table syntax, so this is the one readable form. Inline bold/code markers
+    are dropped from cells, since a code block shows them literally."""
+    rows = []
+    for line in m.group(0).split("\n"):
+        cells = [
+            c.strip().replace("**", "").replace("`", "")
+            for c in line.strip().strip("|").split("|")
+        ]
+        rows.append(cells)
+    del rows[1]  # the separator row
+    width = max(len(r) for r in rows)
+    rows = [r + [""] * (width - len(r)) for r in rows]
+    cols = [max(len(r[i]) for r in rows) for i in range(width)]
+    out = ["  ".join(c.ljust(w) for c, w in zip(r, cols)).rstrip() for r in rows]
+    return "```\n" + "\n".join(out) + "\n```"
+
+
 def _md_to_mrkdwn(text):
     """Convert the common standard-Markdown forms models emit to Slack mrkdwn.
 
     Slack's `text` field renders mrkdwn, where bold is *x*, so a model's **x**
     shows literal asterisks. Converts headings, **bold**, ~~strike~~,
-    and [text](url) links; code blocks and inline code are left as-is.
+    [text](url) links, and pipe tables (to aligned code blocks); code blocks
+    and inline code are left as-is.
     """
     if not text:
         return text
     parts = _CODE_RE.split(text)
+    for i in range(0, len(parts), 2):
+        parts[i] = _MD_TABLE_RE.sub(_md_table, parts[i])
+    parts = _CODE_RE.split("".join(parts))  # re-split: tables are now code
     for i in range(0, len(parts), 2):  # even indices are outside code
         part = parts[i]
         part = _MD_HEADING_RE.sub(_md_heading, part)

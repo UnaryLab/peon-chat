@@ -99,3 +99,15 @@ def test_md_link_repeated_opener_is_fast_and_unsafe_links_stay_raw():
     assert time.perf_counter() - start < 0.2
     for raw in ("[a>b](https://x.io)", "[x](https://a.io/|evil)"):
         assert _md_to_mrkdwn(raw) == raw
+
+
+def test_md_to_mrkdwn_renders_pipe_table_as_aligned_code_block():
+    text = (
+        "intro\n| **Name** | Val |\n|:--|--:|\n| a | 1 |\n| longer | 22 |\nafter **x**"
+    )
+    assert _md_to_mrkdwn(text) == (
+        "intro\n```\nName    Val\na       1\nlonger  22\n```\nafter *x*"
+    )
+    # A table inside an existing code block is left alone.
+    code = "```\n| a | b |\n|---|---|\n| 1 | 2 |\n```"
+    assert _md_to_mrkdwn(code) == code
